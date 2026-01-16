@@ -38,7 +38,9 @@ pipeline {
       bat '''
         @echo on
         set TAG=%GIT_COMMIT:~0,7%
+        echo Logging in...
         echo %P% | docker login -u %U% --password-stdin
+        echo Pushing...
         docker push katiravan/mldevops:%TAG%
       '''
     }
