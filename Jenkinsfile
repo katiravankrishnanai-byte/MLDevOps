@@ -22,6 +22,28 @@ pipeline {
         '''
       }
     }
+    
+    stage('Build Image') {
+  steps {
+    bat '''
+      @echo on
+      set TAG=%GIT_COMMIT:~0,7%
+      docker build -t YOUR_REGISTRY/your-app:%TAG% .
+    '''
+  }
+}
+    stage('Push Image') {
+  steps {
+    withCredentials([usernamePassword(credentialsId: 'registry-creds', usernameVariable: 'U', passwordVariable: 'P')]) {
+      bat '''
+        @echo on
+        set TAG=%GIT_COMMIT:~0,7%
+        echo %P% | docker login -u %U% --password-stdin
+        docker push YOUR_REGISTRY/your-app:%TAG%
+      '''
+    }
+  }
+}
 
     stage('Kubernetes Access Check') {
       steps {
@@ -35,5 +57,17 @@ pipeline {
         }
       }
     }
+    stage('Deploy (Smoke)') {
+  steps {
+    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+      bat '''
+        @echo on
+        set KUBECONFIG=%KUBECONFIG_FILE%
+        kubectl apply -f k8s/
+        kubectl rollout status deploy/your-deploy -n your-ns
+      '''
+    }
+  }
+}
   }
 }
