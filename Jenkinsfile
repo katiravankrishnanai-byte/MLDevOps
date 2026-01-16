@@ -65,10 +65,11 @@ pipeline {
       bat '''
         @echo on
         set KUBECONFIG=%KUBECONFIG_FILE%
-        kubectl apply -f k8s/namespace.yaml
-        kubectl apply -f k8s/
-        kubectl rollout status deploy/mldevops -n mldevops
-        kubectl get pods -n mldevops
+         kubectl apply -f k8s/namespace.yaml
+      kubectl apply -f k8s/deployment.yaml
+      kubectl apply -f k8s/service.yaml
+      kubectl rollout status deploy/mldevops -n mldevops
+      kubectl get pods -n mldevops
       '''
     }
   }
