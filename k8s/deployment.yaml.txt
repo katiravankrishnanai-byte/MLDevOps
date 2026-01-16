@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mldevops
+  namespace: mldevops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mldevops
+  template:
+    metadata:
+      labels:
+        app: mldevops
+    spec:
+      containers:
+        - name: mldevops
+          image: katiravan/mldevops:5b39a36
+          imagePullPolicy: IfNotPresent
+          command: ["python","-c","import time; print('mldevops running'); time.sleep(3600)"]
