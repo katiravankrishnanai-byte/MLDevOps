@@ -28,7 +28,7 @@ pipeline {
     bat '''
       @echo on
       set TAG=%GIT_COMMIT:~0,7%
-      docker build -t katiravan/mldevops:%TAG% 
+      docker build -t katiravan/mldevops:%TAG% .
     '''
   }
 }
