@@ -28,7 +28,7 @@ pipeline {
     bat '''
       @echo on
       set TAG=%GIT_COMMIT:~0,7%
-      docker build -t YOUR_REGISTRY/your-app:%TAG% .
+      docker build -t katiravan/mldevops
     '''
   }
 }
@@ -39,7 +39,7 @@ pipeline {
         @echo on
         set TAG=%GIT_COMMIT:~0,7%
         echo %P% | docker login -u %U% --password-stdin
-        docker push YOUR_REGISTRY/your-app:%TAG%
+        docker push katiravan/mldevops:%TAG%
       '''
     }
   }
