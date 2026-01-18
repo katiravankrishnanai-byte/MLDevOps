@@ -156,7 +156,7 @@ pipeline {
     }
 
     
-  stage('Load Test (k6)') {
+stage('Load Test (k6)') {
   steps {
     withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
       bat '''
@@ -166,15 +166,15 @@ setlocal EnableDelayedExpansion
 set NS=mldevopskatir
 set JOB=k6
 set CM=k6-script
-set APP_LABEL=app=k6
 
-REM >>> MUST MATCH YOUR K8S SERVICE NAME <<<
-set SERVICE_NAME=mldevops-service
+REM MUST MATCH your Service name in k8s/service.yaml
+set SVC=mldevops-service
 set PORT=8000
 
 echo ===== k6: cleanup old resources =====
 kubectl -n %NS% delete job %JOB% --ignore-not-found
 kubectl -n %NS% delete configmap %CM% --ignore-not-found
+kubectl -n %NS% delete pod -l job-name=%JOB% --ignore-not-found
 
 echo ===== k6: create configmap from repo file =====
 if not exist "%WORKSPACE%\\loadtest\\k6.js" (
@@ -206,7 +206,7 @@ echo ===== k6: write job manifest =====
   echo         image: grafana/k6:latest
   echo         env:
   echo         - name: BASE_URL
-  echo           value: "http://%SERVICE_NAME%.%NS%.svc.cluster.local:%PORT%"
+  echo           value: "http://%SVC%.%NS%.svc.cluster.local:%PORT%"
   echo         args: ["run","/scripts/k6.js"]
   echo         volumeMounts:
   echo         - name: k6-scripts
@@ -221,44 +221,41 @@ kubectl -n %NS% apply -f k6-job.yaml
 
 echo ===== k6: wait pod to appear =====
 set POD=
-for /l %%i in (1,1,30) do (
+for /l %%i in (1,1,60) do (
   for /f "delims=" %%P in ('kubectl -n %NS% get pods -l job-name=%JOB% -o jsonpath^="{.items[0].metadata.name}" 2^>NUL') do set POD=%%P
   if not "!POD!"=="" goto pod_found
   timeout /t 2 >nul
 )
-echo ERROR: k6 pod was not created.
+echo ERROR: k6 pod not created.
 kubectl -n %NS% get pods -o wide
+kubectl -n %NS% describe job %JOB%
 exit /b 1
 
 :pod_found
 echo k6 pod: !POD!
 
-echo ===== k6: wait job complete OR failed =====
-kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=600s
-if errorlevel 1 (
-  echo Job not complete. Checking failed condition...
-  kubectl -n %NS% wait --for=condition=failed job/%JOB% --timeout=10s
-)
+echo ===== k6: wait job complete =====
+kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=900s
 
-echo ===== k6: describe + logs =====
+echo ===== k6: logs + describe =====
 kubectl -n %NS% get pods -l job-name=%JOB% -o wide
 kubectl -n %NS% describe pod !POD!
 kubectl -n %NS% logs !POD!
 
-echo ===== k6: determine job status =====
+echo ===== k6: decide success/fail =====
+set SUCCEEDED=
 for /f "delims=" %%S in ('kubectl -n %NS% get job %JOB% -o jsonpath^="{.status.succeeded}" 2^>NUL') do set SUCCEEDED=%%S
-for /f "delims=" %%F in ('kubectl -n %NS% get job %JOB% -o jsonpath^="{.status.failed}" 2^>NUL') do set FAILED=%%F
 
 if "!SUCCEEDED!"=="1" (
-  echo k6 job succeeded.
-  echo ===== k6: cleanup on success =====
+  echo k6 job succeeded. cleaning up.
   kubectl -n %NS% delete job %JOB% --ignore-not-found
   kubectl -n %NS% delete configmap %CM% --ignore-not-found
   endlocal
   exit /b 0
 )
 
-echo ERROR: k6 job failed or did not succeed. Keeping resources for debugging.
+echo ERROR: k6 job not succeeded. keeping resources for debugging.
+kubectl -n %NS% describe job %JOB%
 endlocal
 exit /b 1
 '''
