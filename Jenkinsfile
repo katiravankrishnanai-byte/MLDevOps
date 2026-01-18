@@ -163,14 +163,21 @@ pipeline {
         set KUBECONFIG=%KUBECONFIG_FILE%
         setlocal EnableDelayedExpansion
 
-        rem ---- Clean up any previous run ----
+        rem --- Cleanup previous run (ignore if not found)
         kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
         kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
-        rem ---- Create/Update ConfigMap with k6 script ----
-        kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yml | kubectl apply -f -
+        rem --- Create/Apply ConfigMap from repo file (NO PIPE)
+        if not exist "%WORKSPACE%\\loadtest\\k6.js" (
+          echo ERROR: %WORKSPACE%\\loadtest\\k6.js not found
+          dir "%WORKSPACE%\\loadtest"
+          exit /b 1
+        )
 
-        rem ---- Write k6 Job manifest ----
+        kubectl -n %NAMESPACE% create configmap k6-script --from-file=k6.js="%WORKSPACE%\\loadtest\\k6.js" --dry-run=client -o yaml > k6-configmap.yaml
+        kubectl -n %NAMESPACE% apply -f k6-configmap.yaml
+
+        rem --- Write Job manifest
         > k6-job.yaml (
           echo apiVersion: batch/v1
           echo kind: Job
@@ -201,39 +208,44 @@ pipeline {
           echo           name: k6-script
         )
 
-        rem ---- Apply Job ----
         kubectl -n %NAMESPACE% apply -f k6-job.yaml
 
-        rem ---- Wait until Job completes (kubectl wait fix) ----
-        kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s
+        rem --- Wait for Pod to be Ready (gives better errors if stuck in ContainerCreating)
+        kubectl -n %NAMESPACE% wait --for=condition=Ready pod -l app=k6 --timeout=120s
+        if errorlevel 1 (
+          echo ERROR: k6 pod not Ready (likely image pull / volume mount / node issue)
+          kubectl -n %NAMESPACE% get pod -l app=k6 -o wide
+          kubectl -n %NAMESPACE% describe pod -l app=k6
+          kubectl -n %NAMESPACE% get events --sort-by=.lastTimestamp
+          exit /b 1
+        )
+
+        rem --- Stream logs
+        for /f %%P in ('kubectl -n %NAMESPACE% get pod -l app=k6 -o jsonpath^="{.items[0].metadata.name}"') do set K6POD=%%P
+        kubectl -n %NAMESPACE% logs -f !K6POD!
+
+        rem --- Wait for Job completion (replaces custom FOR loop)
+        kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=600s
         if errorlevel 1 (
           echo ERROR: k6 job did not complete within timeout.
           kubectl -n %NAMESPACE% describe job k6
-          kubectl -n %NAMESPACE% get pods -l job-name=k6 -o wide
-          kubectl -n %NAMESPACE% logs -l job-name=k6 --all-containers=true --tail=-1
+          kubectl -n %NAMESPACE% describe pod -l app=k6
+          kubectl -n %NAMESPACE% get events --sort-by=.lastTimestamp
           exit /b 1
         )
 
-        rem ---- Print logs (after completion) ----
-        kubectl -n %NAMESPACE% logs -l job-name=k6 --all-containers=true --tail=-1
+        rem --- Check exit code from pod container termination
+        set K6_EXIT=
+        for /f %%E in ('kubectl -n %NAMESPACE% get pod !K6POD! -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}"') do set K6_EXIT=%%E
+        echo K6 exit code: !K6_EXIT!
 
-        rem ---- Determine pass/fail from Job status ----
-        set SUCCEEDED=
-        for /f "delims=" %%S in ('kubectl -n %NAMESPACE% get job k6 -o jsonpath^="{.status.succeeded}" 2^>nul') do set SUCCEEDED=%%S
-        set FAILED=
-        for /f "delims=" %%F in ('kubectl -n %NAMESPACE% get job k6 -o jsonpath^="{.status.failed}" 2^>nul') do set FAILED=%%F
-
-        if "%SUCCEEDED%"=="1" (
-          echo K6 job succeeded.
-        ) else (
-          echo ERROR: K6 job failed. succeeded=%SUCCEEDED% failed=%FAILED%
-          kubectl -n %NAMESPACE% describe job k6
-          kubectl -n %NAMESPACE% get pods -l job-name=k6 -o wide
-          kubectl -n %NAMESPACE% logs -l job-name=k6 --all-containers=true --tail=-1
+        if not "!K6_EXIT!"=="0" (
+          echo ERROR: k6 failed thresholds/tests.
+          kubectl -n %NAMESPACE% describe pod !K6POD!
           exit /b 1
         )
 
-        rem ---- Cleanup (optional) ----
+        rem --- Cleanup
         kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
         kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
