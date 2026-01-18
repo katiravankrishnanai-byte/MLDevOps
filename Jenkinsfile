@@ -168,10 +168,10 @@ pipeline {
         kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
         rem ---- Create/Update ConfigMap with k6 script ----
-        kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yaml | kubectl apply -f -
+        kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yml | kubectl apply -f -
 
         rem ---- Write k6 Job manifest ----
-        > k6-job.yaml (
+        > k6-job.yml (
           echo apiVersion: batch/v1
           echo kind: Job
           echo metadata:
@@ -202,7 +202,7 @@ pipeline {
         )
 
         rem ---- Apply Job ----
-        kubectl -n %NAMESPACE% apply -f k6-job.yaml
+        kubectl -n %NAMESPACE% apply -f k6-job.yml
 
         rem ---- Wait until Job completes (kubectl wait fix) ----
         kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s
