@@ -34,7 +34,7 @@ pipeline {
           echo SHORTSHA=!SHORTSHA!
 
           rem If build is running on a git tag (e.g. v1.0.0), capture it
-          for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
+          for /f %t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%t
           echo RELTAG=!RELTAG!
         '''
       }
@@ -73,7 +73,7 @@ pipeline {
           docker build -t %IMAGE_REPO%:git-!SHORTSHA! .
 
           set RELTAG=
-          for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
+          for /f %t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%t
 
           if not "!RELTAG!"=="" (
           docker tag %IMAGE_REPO%:git-!SHORTSHA! %IMAGE_REPO%:!RELTAG!
@@ -101,7 +101,7 @@ pipeline {
             docker push %IMAGE_REPO%:git-!SHORTSHA!
             
             set RELTAG=
-            for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
+            for /f %t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%t
 
             if not "!RELTAG!"=="" (
               docker push %IMAGE_REPO%:!RELTAG!
@@ -210,7 +210,7 @@ pipeline {
           kubectl -n mldevopskatir wait --for=jsonpath='{.status.phase}'=Succeeded pod/k6 --timeout=180s || echo Pod not Succeeded
 
         rem Extract exit code (0=pass)
-        for /f %%e in ('kubectl -n mldevopskatir get pod k6 -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}"') do set "K6_EXIT=%%e"
+        for /f %e in ('kubectl -n mldevopskatir get pod k6 -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}"') do set "K6_EXIT=%e"
         echo K6 exit code: %K6_EXIT%
 
         if not "%K6_EXIT%"=="0" (
