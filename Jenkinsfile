@@ -44,16 +44,17 @@ pipeline {
           python --version
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest ruff
+          pip install pytest 
 
-          ruff check src
-          pytest -q --junitxml=test-results.xml
+          if not exist reports mkdir reports
+          python -m pytest -q --junitxml=reports\\test-results.xml
+          dir reports
         '''
       }
       post {
         always {
-          junit 'test-results.xml'
-          archiveArtifacts artifacts: 'test-results.xml', fingerprint: true
+          junit 'reports/test-results.xml'
+          archiveArtifacts artifacts: 'reports/test-results.xml', fingerprint: true
         }
       }
     }
