@@ -10,7 +10,7 @@ pipeline {
   environment {
     IMAGE_REPO = "katiravan/mldevops"     // Docker Hub repo
     NAMESPACE  = "mldevopskatir"          // k8s namespace
-    APP_NAME   = "mldevops"              // Deployment name AND container name in deployment.yml
+    APP_NAME   = "mldevops"              // Deployment name AND container name in deployment.yaml
     SERVICE    = "mldevops"              // Service name
   }
 
@@ -115,9 +115,9 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            kubectl apply -f k8s\\namespace.yml
-            kubectl apply -f k8s\\deployment.yml
-            kubectl apply -f k8s\\service.yml
+            kubectl apply -f k8s\\namespace.yaml
+            kubectl apply -f k8s\\deployment.yaml
+            kubectl apply -f k8s\\service.yaml
 
             echo Setting image to: %IMAGE_REPO%:git-%SHORTSHA%
             kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA%
