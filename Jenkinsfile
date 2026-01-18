@@ -211,8 +211,7 @@ pipeline {
     }
   }
 }
-
-
+  }
   post {
     always {
       archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md', fingerprint: true
