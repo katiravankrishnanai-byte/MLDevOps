@@ -27,12 +27,15 @@ pipeline {
       steps {
         bat '''
           @echo on
+          setlocal EnableDelayedExpansion
+
+          set SHORTSHA=
           for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
-          echo SHORTSHA=%SHORTSHA%
+          echo SHORTSHA=!SHORTSHA!
 
           rem If build is running on a git tag (e.g. v1.0.0), capture it
           for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
-          echo RELTAG=%RELTAG%
+          echo RELTAG=!RELTAG!
         '''
       }
     }
@@ -63,14 +66,22 @@ pipeline {
       steps {
         bat '''
           @echo on
+          setlocal EnableDelayedExpansion
+          
+          set SHORTSHA=
           for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
+          docker build -t %IMAGE_REPO%:git-!SHORTSHA! .
 
-          docker build -t %IMAGE_REPO%:git-%SHORTSHA% .
+          set RELTAG=
+          for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
 
-          rem If this is a release tag build, also tag image with vX.Y.Z
-          for /f %%t in ('git describe --tags --exact-match 2^>nul') do (
-            docker tag %IMAGE_REPO%:git-%SHORTSHA% %IMAGE_REPO%:%%t
-          )
+          if not "!RELTAG!"=="" (
+          docker tag %IMAGE_REPO%:git-!SHORTSHA! %IMAGE_REPO%:!RELTAG!
+          echo Release tag applied: !RELTAG!
+          ) else (
+          echo No release tag. Skipping SemVer tag.
+        )
+      endlocal
         '''
       }
     }
@@ -80,16 +91,25 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'registry-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           bat '''
             @echo on
+            setlocal EnableDelayedExpansion
+            
+            set SHORTSHA=
             for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
 
             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
 
-            docker push %IMAGE_REPO%:git-%SHORTSHA%
+            docker push %IMAGE_REPO%:git-!SHORTSHA!
+            
+            set RELTAG=
+            for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
 
-            for /f %%t in ('git describe --tags --exact-match 2^>nul') do (
-              docker push %IMAGE_REPO%:%%t
+            if not "!RELTAG!"=="" (
+              docker push %IMAGE_REPO%:!RELTAG!
+              ) else (
+              echo No release tag. Skipping push for SemVer tag.
             )
-          '''
+        endlocal
+      '''
         }
       }
     }
@@ -100,15 +120,19 @@ pipeline {
           bat '''
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
-
+            setlocal EnableDelayedExpansion
+            
             rem Apply base manifests
             kubectl apply -f k8s\\namespace.yml
             kubectl apply -f k8s\\deployment.yml
             kubectl apply -f k8s\\service.yml
 
             rem Update image to immutable commit tag
+            set SHORTSHA=
             for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
-            kubectl -n %NAMESPACE% set image deploy/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA%
+            
+            kubectl -n %NAMESPACE% set image deploy/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-!SHORTSHA!
+            endlocal
           '''
         }
       }
@@ -144,24 +168,50 @@ pipeline {
       }
     }
 
-    stage('Load Test (k6)') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          bat '''
-            @echo on
-            set KUBECONFIG=%KUBECONFIG_FILE%
+   stage('Load Test (k6)') {
+  steps {
+    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+      bat '''
+        @echo on
+        set KUBECONFIG=%KUBECONFIG_FILE%
 
-            rem Create/Update configmap with k6 script
-            kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yaml | kubectl apply -f -
+        kubectl -n %NAMESPACE% delete pod k6 --ignore-not-found
 
-            rem Run k6 inside cluster against ClusterIP service
-            kubectl -n %NAMESPACE% run k6 --rm -i --restart=Never --image=grafana/k6:latest -- ^
-              run -e BASE_URL=http://%SERVICE%:8000 k6.js
-          '''
-        }
-      }
+        kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yaml | kubectl apply -f -
+
+        > k6-pod.yaml (
+          echo apiVersion: v1
+          echo kind: Pod
+          echo metadata:
+          echo   name: k6
+          echo   namespace: %NAMESPACE%
+          echo spec:
+          echo   restartPolicy: Never
+          echo   containers:
+          echo   - name: k6
+          echo     image: grafana/k6:latest
+          echo     env:
+          echo     - name: BASE_URL
+          echo       value: "http://%SERVICE%:8000"
+          echo     args: ["run","/scripts/k6.js"]
+          echo     volumeMounts:
+          echo     - name: k6-scripts
+          echo       mountPath: /scripts
+          echo   volumes:
+          echo   - name: k6-scripts
+          echo     configMap:
+          echo       name: k6-script
+        )
+
+        kubectl apply -f k6-pod.yaml
+        kubectl -n %NAMESPACE% wait --for=condition=Ready pod/k6 --timeout=60s
+        kubectl -n %NAMESPACE% logs -f pod/k6
+        kubectl -n %NAMESPACE% delete pod k6 --ignore-not-found
+      '''
     }
   }
+}
+
 
   post {
     always {
