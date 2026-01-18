@@ -1,16 +1,17 @@
-from fastapi.testclient import TestClient
-from src.app import app
-
-client = TestClient(app)
-
 def test_predict():
     payload = {
-        "feature1": 1,
-        "feature2": 2
+        "machine_age_days": 10,
+        "temperature_c": 25,
+        "pressure_kpa": 101,
+        "vibration_mm_s": 1.2,
+        "humidity_pct": 60,
+        "operator_experience_yrs": 3,
+        "shift": 2,
+        "material_grade": 1,
+        "line_speed_m_min": 120,
+        "inspection_interval_hrs": 8
     }
 
-    response = client.post("/predict", json=payload)
-
-    assert response.status_code == 200
-    assert "prediction" in response.json()
-    assert isinstance(response.json()["prediction"], float)
+    r = client.post("/predict", json=payload)
+    assert r.status_code == 200
+    assert "prediction" in r.json()

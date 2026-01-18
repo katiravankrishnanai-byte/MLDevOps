@@ -1,28 +1,27 @@
 from pathlib import Path
 import joblib
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
 
-MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "rf_component_bundle.joblib"
-model = None
+BUNDLE_PATH = Path(__file__).resolve().parent.parent / "models" / "rf_component_bundle.joblib"
 
-@app.on_event("startup")
-def load_model():
-    global model
-    if not MODEL_PATH.exists():
-        model = None
-        return
-    model = joblib.load(MODEL_PATH)
+bundle = joblib.load(BUNDLE_PATH)
+pipe = bundle["pipeline"]
+contract = bundle["contract"]
+FEATURES = contract["numeric_features"]  # 10 features
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": model is not None}
+    return {"status": "ok"}
 
 @app.post("/predict")
 def predict(data: dict):
-    if model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded. Ensure models/rf_component_bundle.joblib exists.")
-    X = list(data.values())
-    y = model.predict([X])[0]
+    missing = [f for f in FEATURES if f not in data]
+    if missing:
+        raise HTTPException(400, f"Missing features: {missing}")
+
+    X = pd.DataFrame([[data[f] for f in FEATURES]], columns=FEATURES)
+    y = pipe.predict(X)[0]
     return {"prediction": float(y)}
