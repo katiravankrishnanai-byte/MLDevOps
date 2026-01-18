@@ -155,95 +155,118 @@ pipeline {
       }
     }
 
-     stage('Load Test (k6)') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          bat '''
-    set KUBECONFIG=%KUBECONFIG_FILE%
-    setlocal EnableDelayedExpansion
     
-    set NS=mldevopskatir
-    set JOB=k6
-    set CM=k6-script
-    set APP_LABEL=app=k6
-    
-    echo ===== k6: cleanup old resources =====
-    kubectl -n %NS% delete job %JOB% --ignore-not-found
-    kubectl -n %NS% delete pod -l job-name=%JOB% --ignore-not-found
-    kubectl -n %NS% delete pod -l %APP_LABEL% --ignore-not-found
-    kubectl -n %NS% delete configmap %CM% --ignore-not-found
-    
-    echo ===== k6: create configmap from repo file =====
-    if not exist "%WORKSPACE%\\loadtest\\k6.js" (
-      echo ERROR: %WORKSPACE%\\loadtest\\k6.js not found
-      dir "%WORKSPACE%\\loadtest"
-      exit /b 1
-    )
-    
-    kubectl -n %NS% create configmap %CM% --from-file=k6.js="%WORKSPACE%\\loadtest\\k6.js" --dry-run=client -o yaml > k6-configmap.yaml
-    kubectl -n %NS% apply -f k6-configmap.yaml
-    
-    echo ===== k6: write job manifest =====
-    (
-      echo apiVersion: batch/v1
-      echo kind: Job
-      echo metadata:
-      echo   name: %JOB%
-      echo   namespace: %NS%
-      echo spec:
-      echo   backoffLimit: 0
-      echo   template:
-      echo     metadata:
-      echo       labels:
-      echo         app: k6
-      echo     spec:
-      echo       restartPolicy: Never
-      echo       containers:
-      echo       - name: k6
-      echo         image: grafana/k6:latest
-      echo         env:
-      echo         - name: BASE_URL
-      echo           value: "http://mldevops:8000"
-      echo         args: ["run","/scripts/k6.js"]
-      echo         volumeMounts:
-      echo         - name: k6-scripts
-      echo           mountPath: /scripts
-      echo       volumes:
-      echo       - name: k6-scripts
-      echo         configMap:
-      echo           name: %CM%
-    ) > k6-job.yaml
-    
-    kubectl -n %NS% apply -f k6-job.yaml
-    
-    echo ===== k6: wait job complete =====
-    kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=240s
-    if errorlevel 1 (
-      echo ERROR: k6 job did not complete within timeout.
-      kubectl -n %NS% get pods -l job-name=%JOB% -o wide
-      kubectl -n %NS% describe pods -l job-name=%JOB%
-      for /f "delims=" %%P in ('kubectl -n %NS% get pods -l job-name=%JOB% -o jsonpath^="{.items[0].metadata.name}"') do set POD=%%P
-      if not "!POD!"=="" (
-        echo ----- k6 logs from !POD! -----
-        kubectl -n %NS% logs !POD!
-      )
-      exit /b 1
-    )
-    
-    echo ===== k6: print logs =====
-    for /f "delims=" %%P in ('kubectl -n %NS% get pods -l job-name=%JOB% -o jsonpath^="{.items[0].metadata.name}"') do set POD=%%P
-    echo k6 pod: !POD!
-    kubectl -n %NS% logs !POD!
-    
-    echo ===== k6: cleanup (optional) =====
-    kubectl -n %NS% delete job %JOB% --ignore-not-found
-    kubectl -n %NS% delete configmap %CM% --ignore-not-found
-    
-    endlocal
-    '''
-        }
-      }
+  stage('Load Test (k6)') {
+  steps {
+    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+      bat '''
+set KUBECONFIG=%KUBECONFIG_FILE%
+setlocal EnableDelayedExpansion
+
+set NS=mldevopskatir
+set JOB=k6
+set CM=k6-script
+set APP_LABEL=app=k6
+
+REM >>> MUST MATCH YOUR K8S SERVICE NAME <<<
+set SERVICE_NAME=mldevops-service
+set PORT=8000
+
+echo ===== k6: cleanup old resources =====
+kubectl -n %NS% delete job %JOB% --ignore-not-found
+kubectl -n %NS% delete configmap %CM% --ignore-not-found
+
+echo ===== k6: create configmap from repo file =====
+if not exist "%WORKSPACE%\\loadtest\\k6.js" (
+  echo ERROR: %WORKSPACE%\\loadtest\\k6.js not found
+  dir "%WORKSPACE%\\loadtest"
+  exit /b 1
+)
+
+kubectl -n %NS% create configmap %CM% --from-file=k6.js="%WORKSPACE%\\loadtest\\k6.js" --dry-run=client -o yaml > k6-configmap.yaml
+kubectl -n %NS% apply -f k6-configmap.yaml
+
+echo ===== k6: write job manifest =====
+(
+  echo apiVersion: batch/v1
+  echo kind: Job
+  echo metadata:
+  echo   name: %JOB%
+  echo   namespace: %NS%
+  echo spec:
+  echo   backoffLimit: 0
+  echo   template:
+  echo     metadata:
+  echo       labels:
+  echo         app: k6
+  echo     spec:
+  echo       restartPolicy: Never
+  echo       containers:
+  echo       - name: k6
+  echo         image: grafana/k6:latest
+  echo         env:
+  echo         - name: BASE_URL
+  echo           value: "http://%SERVICE_NAME%.%NS%.svc.cluster.local:%PORT%"
+  echo         args: ["run","/scripts/k6.js"]
+  echo         volumeMounts:
+  echo         - name: k6-scripts
+  echo           mountPath: /scripts
+  echo       volumes:
+  echo       - name: k6-scripts
+  echo         configMap:
+  echo           name: %CM%
+) > k6-job.yaml
+
+kubectl -n %NS% apply -f k6-job.yaml
+
+echo ===== k6: wait pod to appear =====
+set POD=
+for /l %%i in (1,1,30) do (
+  for /f "delims=" %%P in ('kubectl -n %NS% get pods -l job-name=%JOB% -o jsonpath^="{.items[0].metadata.name}" 2^>NUL') do set POD=%%P
+  if not "!POD!"=="" goto pod_found
+  timeout /t 2 >nul
+)
+echo ERROR: k6 pod was not created.
+kubectl -n %NS% get pods -o wide
+exit /b 1
+
+:pod_found
+echo k6 pod: !POD!
+
+echo ===== k6: wait job complete OR failed =====
+kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=600s
+if errorlevel 1 (
+  echo Job not complete. Checking failed condition...
+  kubectl -n %NS% wait --for=condition=failed job/%JOB% --timeout=10s
+)
+
+echo ===== k6: describe + logs =====
+kubectl -n %NS% get pods -l job-name=%JOB% -o wide
+kubectl -n %NS% describe pod !POD!
+kubectl -n %NS% logs !POD!
+
+echo ===== k6: determine job status =====
+for /f "delims=" %%S in ('kubectl -n %NS% get job %JOB% -o jsonpath^="{.status.succeeded}" 2^>NUL') do set SUCCEEDED=%%S
+for /f "delims=" %%F in ('kubectl -n %NS% get job %JOB% -o jsonpath^="{.status.failed}" 2^>NUL') do set FAILED=%%F
+
+if "!SUCCEEDED!"=="1" (
+  echo k6 job succeeded.
+  echo ===== k6: cleanup on success =====
+  kubectl -n %NS% delete job %JOB% --ignore-not-found
+  kubectl -n %NS% delete configmap %CM% --ignore-not-found
+  endlocal
+  exit /b 0
+)
+
+echo ERROR: k6 job failed or did not succeed. Keeping resources for debugging.
+endlocal
+exit /b 1
+'''
     }
+  }
+}
+
+     
   }
 
   post {
