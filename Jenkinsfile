@@ -173,6 +173,23 @@ pipeline {
     kubectl -n %NS% delete pod -l job-name=%JOB% --ignore-not-found
     kubectl -n %NS% delete pod -l %APP_LABEL% --ignore-not-found
     kubectl -n %NS% delete configmap %CM% --ignore-not-found
+
+//CONFIRM SERVICE + PORT EXIST
+    echo ===== verify service exists =====
+    kubectl -n %NS% get svc mldevops || exit /b 1
+
+    echo ===== verify service has endpoints =====
+    kubectl -n %NS% get endpoints mldevops || exit /b 1
+    
+//CONFIRM ROUTES EXIST (/health, /predict
+    echo ===== verify routes via port-forward =====
+    kubectl -n %NS% port-forward svc/mldevops 8000:8000 >nul 2>&1 &
+    timeout /t 3 >nul
+
+    curl -i http://127.0.0.1:8000/health || exit /b 1
+    curl -i http://127.0.0.1:8000/predict || exit /b 1
+    
+    taskkill /IM kubectl.exe /F >nul 2>&1
     
     echo ===== k6: create configmap from repo file =====
     if not exist "%WORKSPACE%\\loadtest\\k6.js" (
