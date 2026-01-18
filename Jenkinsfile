@@ -30,11 +30,11 @@ pipeline {
           setlocal EnableDelayedExpansion
 
           set SHORTSHA=
-          for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
+          for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
           echo SHORTSHA=!SHORTSHA!
 
           rem If build is running on a git tag (e.g. v1.0.0), capture it
-          for /f %t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%t
+          for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
           echo RELTAG=!RELTAG!
         '''
       }
@@ -69,11 +69,11 @@ pipeline {
           setlocal EnableDelayedExpansion
           
           set SHORTSHA=
-          for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
+          for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
           docker build -t %IMAGE_REPO%:git-!SHORTSHA! .
 
           set RELTAG=
-          for /f %t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%t
+          for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
 
           if not "!RELTAG!"=="" (
           docker tag %IMAGE_REPO%:git-!SHORTSHA! %IMAGE_REPO%:!RELTAG!
@@ -94,14 +94,14 @@ pipeline {
             setlocal EnableDelayedExpansion
             
             set SHORTSHA=
-            for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
+            for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
 
             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
 
             docker push %IMAGE_REPO%:git-!SHORTSHA!
             
             set RELTAG=
-            for /f %t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%t
+            for /f %%t in ('git describe --tags --exact-match 2^>nul') do set RELTAG=%%t
 
             if not "!RELTAG!"=="" (
               docker push %IMAGE_REPO%:!RELTAG!
@@ -129,7 +129,7 @@ pipeline {
 
             rem Update image to immutable commit tag
             set SHORTSHA=
-            for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
+            for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
             
             kubectl -n %NAMESPACE% set image deploy/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-!SHORTSHA!
             endlocal
@@ -210,7 +210,7 @@ pipeline {
           kubectl -n mldevopskatir wait --for=jsonpath='{.status.phase}'=Succeeded pod/k6 --timeout=180s || echo Pod not Succeeded
 
         rem Extract exit code (0=pass)
-        for /f %e in ('kubectl -n mldevopskatir get pod k6 -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}"') do set "K6_EXIT=%e"
+        for /f %%e in ('kubectl -n mldevopskatir get pod k6 -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}"') do set "K6_EXIT=%%e"
         echo K6 exit code: %K6_EXIT%
 
         if not "%K6_EXIT%"=="0" (
