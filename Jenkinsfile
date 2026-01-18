@@ -8,10 +8,10 @@ pipeline {
   }
 
   environment {
-    IMAGE_REPO = "katiravan/mldevops"     // Docker Hub repo
-    NAMESPACE  = "mldevopskatir"          // k8s namespace
-    APP_NAME   = "mldevops"              // Deployment name AND container name in deployment.yaml
-    SERVICE    = "mldevops"              // Service name
+    IMAGE_REPO = "katiravan/mldevops"    
+    NAMESPACE  = "mldevopskatir"          
+    APP_NAME   = "mldevops"            
+    SERVICE    = "mldevops"             
   }
 
   options { timestamps() }
@@ -174,14 +174,14 @@ pipeline {
     kubectl -n %NS% delete pod -l %APP_LABEL% --ignore-not-found
     kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
-//CONFIRM SERVICE + PORT EXIST
+
     echo ===== verify service exists =====
     kubectl -n %NS% get svc mldevops || exit /b 1
 
     echo ===== verify service has endpoints =====
     kubectl -n %NS% get endpoints mldevops || exit /b 1
     
-//CONFIRM ROUTES EXIST (/health, /predict
+
     echo ===== verify routes via port-forward =====
     kubectl -n %NS% port-forward svc/mldevops 8000:8000 >nul 2>&1 &
     timeout /t 3 >nul
