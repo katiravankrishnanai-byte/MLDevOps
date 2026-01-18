@@ -1,3 +1,8 @@
+from fastapi.testclient import TestClient
+from src.app import app
+
+client = TestClient(app)
+
 def test_predict():
     payload = {
         "machine_age_days": 10,
@@ -13,5 +18,6 @@ def test_predict():
     }
 
     r = client.post("/predict", json=payload)
+
     assert r.status_code == 200
     assert "prediction" in r.json()
