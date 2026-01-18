@@ -19,30 +19,30 @@ export const options = {
   },
 };
 
-const BASE_URL = __ENV.BASE_URL; 
+const BASE_URL = (__ENV.BASE_URL && __ENV.BASE_URL.trim()) || "http://mldevops:8000";
 
 
 export default function () {
-  // 10 features (replace numbers with realistic values/ranges)
   const payload = JSON.stringify({
-    features: [1,2,3,4,5,6,7,8,9,10]
+    // Keep this ONLY if your API expects a numeric list
+    features: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   });
 
-  const params = {
-    headers: {
-      "Content-Type": "application/json",
-    },
-  };
-
-const res = http.post(`${BASE_URL}/predict`, payload, {
+  const res = http.post(`${BASE_URL}/predict`, payload, {
     headers: { "Content-Type": "application/json" },
+    timeout: "10s",
   });
-  
 
-   check(res, {
+  check(res, {
     "HTTP 200": (r) => r.status === 200,
+    "json response": (r) => (r.headers["Content-Type"] || "").includes("application/json"),
     "has prediction": (r) => {
-      try { return JSON.parse(r.body).prediction !== undefined; } catch { return false; }
+      try {
+        const body = JSON.parse(r.body || "{}");
+        return body.prediction !== undefined;
+      } catch (e) {
+        return false;
+      }
     },
   });
 
