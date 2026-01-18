@@ -183,7 +183,7 @@ pipeline {
     
 
     echo ===== verify routes via port-forward =====
-    kubectl -n %NS% port-forward svc/mldevops:8000 >nul 2>&1 &
+    kubectl -n mldevopskatir port-forward svc/mldevops 8000:8000 >nul 2>&1
     timeout /t 3 >nul
 
     curl -i http://127.0.0.1:8000/health || exit /b 1
