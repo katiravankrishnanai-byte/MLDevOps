@@ -175,13 +175,13 @@ pipeline {
     kubectl -n %NS% delete configmap %CM% --ignore-not-found
     
     echo ===== k6: create configmap from repo file =====
-    if not exist "%WORKSPACE%\\loadtest\\k6" (
-      echo ERROR: %WORKSPACE%\\loadtest\\k6 not found
+    if not exist "%WORKSPACE%\\loadtest\\k6.js" (
+      echo ERROR: %WORKSPACE%\\loadtest\\k6.js not found
       dir "%WORKSPACE%\\loadtest"
       exit /b 1
     )
     
-    kubectl -n %NS% create configmap %CM% --from-file=k6.js="%WORKSPACE%\\loadtest\\k6" --dry-run=client -o yaml > k6-configmap.yaml
+    kubectl -n %NS% create configmap %CM% --from-file=k6.js="%WORKSPACE%\\loadtest\\k6.js" --dry-run=client -o yaml > k6-configmap.yaml
     kubectl -n %NS% apply -f k6-configmap.yaml
     
     echo ===== k6: write job manifest =====
