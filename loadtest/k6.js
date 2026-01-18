@@ -19,13 +19,13 @@ export const options = {
   },
 };
 
-const BASE_URL = __ENV.BASE_URL; // injected by Jenkins
+const BASE_URL = __ENV.BASE_URL; 
+
 
 export default function () {
-  // Payload MUST match Assignment 2 input schema
+  // 10 features (replace numbers with realistic values/ranges)
   const payload = JSON.stringify({
-    feature1: 1,
-    feature2: 2
+    features: [1,2,3,4,5,6,7,8,9,10]
   });
 
   const params = {
@@ -34,17 +34,15 @@ export default function () {
     },
   };
 
-  const res = http.post(`${BASE_URL}/predict`, payload, params);
+const res = http.post(`${BASE_URL}/predict`, payload, {
+    headers: { "Content-Type": "application/json" },
+  });
+  
 
-  check(res, {
-    "HTTP 200 returned": (r) => r.status === 200,
-    "response has prediction": (r) => {
-      try {
-        const body = JSON.parse(r.body);
-        return body.prediction !== undefined;
-      } catch (e) {
-        return false;
-      }
+   check(res, {
+    "HTTP 200": (r) => r.status === 200,
+    "has prediction": (r) => {
+      try { return JSON.parse(r.body).prediction !== undefined; } catch { return false; }
     },
   });
 
