@@ -19,7 +19,7 @@ export default function () {
   const payload = JSON.stringify({
     // MUST match your FastAPI /predict request model
     // example only:
-    features: [1, 2, 3, 4,5,6,7,8,9,10],
+    features: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   });
 
   const res = http.post(`${BASE_URL}/predict`, payload, {
