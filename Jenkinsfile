@@ -1,9 +1,11 @@
-tools {
-  git 'Default'
-}
+
 
 pipeline {
   agent any
+
+    tools {
+  git 'Default'
+  }
 
   environment {
     IMAGE_REPO = "katiravan/mldevops"     // Docker Hub repo
