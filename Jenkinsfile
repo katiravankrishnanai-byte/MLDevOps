@@ -149,7 +149,7 @@ pipeline {
             set KUBECONFIG=%KUBECONFIG_FILE%
 
             kubectl -n %NAMESPACE% run curl --rm -i --restart=Never --image=curlimages/curl -- ^
-              curl -sS http://%SERVICE%:8000/health
+              curl -sS http://%SERVICE%:8000/health || exit /b 1
           '''
         }
       }
