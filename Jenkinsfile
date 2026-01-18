@@ -23,12 +23,11 @@ pipeline {
       }
     }
 
-    stage('Compute Tags') {
+   stage('Compute Tags') {
   steps {
     script {
-      env.SHORTSHA = bat(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
+      env.SHORTSHA = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
 
-      // Do NOT fail the stage if HEAD is not tagged
       def s = bat(returnStatus: true, script: '@echo off\r\ngit describe --tags --exact-match 1> .reltag.txt 2>nul')
       env.RELTAG = (s == 0) ? readFile('.reltag.txt').trim() : ''
     }
@@ -58,22 +57,31 @@ pipeline {
       }
     }
 
-    stage('Build Image') {
-      steps {
-        bat '''
-          @echo on
-          echo Building image: %IMAGE_REPO%:git-%SHORTSHA%
-          docker build -t %IMAGE_REPO%:git-%SHORTSHA% .
-
-          if not "%RELTAG%"=="" (
-            echo Applying release tag: %RELTAG%
-            docker tag %IMAGE_REPO%:git-%SHORTSHA% %IMAGE_REPO%:%RELTAG%
-          ) else (
-            echo No release tag. Skipping SemVer tag.
-          )
-        '''
+   stage('Build Image') {
+  steps {
+    script {
+      if (!(env.SHORTSHA ==~ /^[0-9a-f]{7}$/)) {
+        error("SHORTSHA invalid. Expected 7-hex, got: '${env.SHORTSHA}'")
+      }
+      if (env.RELTAG && !(env.RELTAG ==~ /^[0-9A-Za-z._-]+$/)) {
+        error("RELTAG invalid. Got: '${env.RELTAG}'")
       }
     }
+
+    bat '''
+      @echo on
+      echo Building image: "%IMAGE_REPO%:git-%SHORTSHA%"
+      docker build -t "%IMAGE_REPO%:git-%SHORTSHA%" .
+
+      if not "%RELTAG%"=="" (
+        echo Applying release tag: %RELTAG%
+        docker tag "%IMAGE_REPO%:git-%SHORTSHA%" "%IMAGE_REPO%:%RELTAG%"
+      ) else (
+        echo No release tag. Skipping SemVer tag.
+      )
+    '''
+  }
+}
 
     stage('Push Image') {
       steps {
