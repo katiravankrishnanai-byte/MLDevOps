@@ -2,11 +2,11 @@ apiVersion: v1
 kind: Service
 metadata:
   name: mldevops
-  namespace: mldevops
+  namespace: mldevopskatir
 spec:
   selector:
     app: mldevops
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 8000
+      targetPort: 8000
   type: ClusterIP

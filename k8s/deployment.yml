@@ -2,9 +2,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mldevops
-  namespace: mldevops
+  namespace: mldevopskatir
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: mldevops
@@ -15,6 +20,18 @@ spec:
     spec:
       containers:
         - name: mldevops
-          image: katiravan/mldevops:5b39a36
-          imagePullPolicy: IfNotPresent
-          command: ["python","-c","import time; print('mldevops running'); time.sleep(3600)"]
+          image: mldevopskatir:2026118
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
