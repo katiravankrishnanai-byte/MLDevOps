@@ -1,3 +1,7 @@
+tools {
+  git 'Default'
+}
+
 pipeline {
   agent any
 
