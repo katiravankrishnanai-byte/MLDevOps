@@ -24,18 +24,17 @@ pipeline {
     }
 
     stage('Compute Tags') {
-      steps {
-        script {
-          // Get 7-char git commit safely (no FOR loop, no delayed expansion)
-          env.SHORTSHA = bat(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
+  steps {
+    script {
+      env.SHORTSHA = bat(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
 
-          // Get git tag if HEAD is exactly at a tag; otherwise blank
-          def rel = bat(returnStdout: true, script: '@echo off\r\ngit describe --tags --exact-match 2>nul').trim()
-          env.RELTAG = rel
-        }
-        bat '@echo on\necho SHORTSHA=%SHORTSHA%\necho RELTAG=%RELTAG%'
-      }
+      // Do NOT fail the stage if HEAD is not tagged
+      def s = bat(returnStatus: true, script: '@echo off\r\ngit describe --tags --exact-match 1> .reltag.txt 2>nul')
+      env.RELTAG = (s == 0) ? readFile('.reltag.txt').trim() : ''
     }
+    bat '@echo on\necho SHORTSHA=%SHORTSHA%\necho RELTAG=%RELTAG%'
+  }
+}
 
     stage('QA (Unit Tests)') {
       steps {
