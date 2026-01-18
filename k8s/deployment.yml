@@ -20,7 +20,8 @@ spec:
     spec:
       containers:
         - name: mldevops
-          image: mldevopskatir:2026118
+          image: katiravan/mldevopskatir:2026118
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           readinessProbe:
