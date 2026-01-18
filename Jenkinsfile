@@ -30,7 +30,7 @@ pipeline {
           setlocal EnableDelayedExpansion
 
           set SHORTSHA=
-          for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
+          for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
           echo SHORTSHA=!SHORTSHA!
 
           rem If build is running on a git tag (e.g. v1.0.0), capture it
@@ -69,7 +69,7 @@ pipeline {
           setlocal EnableDelayedExpansion
           
           set SHORTSHA=
-          for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
+          for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
           docker build -t %IMAGE_REPO%:git-!SHORTSHA! .
 
           set RELTAG=
@@ -94,7 +94,7 @@ pipeline {
             setlocal EnableDelayedExpansion
             
             set SHORTSHA=
-            for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
+            for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
 
             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
 
@@ -129,7 +129,7 @@ pipeline {
 
             rem Update image to immutable commit tag
             set SHORTSHA=
-            for /f %%i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%%i
+            for /f %i in ('git rev-parse --short=7 HEAD') do set SHORTSHA=%i
             
             kubectl -n %NAMESPACE% set image deploy/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-!SHORTSHA!
             endlocal
@@ -206,6 +206,17 @@ pipeline {
         kubectl apply -f k6-pod.yaml
         kubectl -n %NAMESPACE% wait --for=condition=Ready pod/k6 --timeout=60s
         kubectl -n %NAMESPACE% logs -f pod/k6
+        rem Wait for k6 container to terminate
+          kubectl -n mldevopskatir wait --for=jsonpath='{.status.phase}'=Succeeded pod/k6 --timeout=180s || echo Pod not Succeeded
+
+        rem Extract exit code (0=pass)
+        for /f %%e in ('kubectl -n mldevopskatir get pod k6 -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}"') do set "K6_EXIT=%%e"
+        echo K6 exit code: %K6_EXIT%
+
+        if not "%K6_EXIT%"=="0" (
+        echo ERROR: k6 failed thresholds/tests.
+    exit /b 1
+)
         kubectl -n %NAMESPACE% delete pod k6 --ignore-not-found
       '''
     }
