@@ -1,22 +1,28 @@
-from fastapi import FastAPI
+from pathlib import Path
 import joblib
+from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
 
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "rf_component_bundle.joblib"
 model = None
 
 @app.on_event("startup")
 def load_model():
     global model
-    model = joblib.load("models/rf_component_bundle.joblib")
+    if not MODEL_PATH.exists():
+        model = None
+        return
+    model = joblib.load(MODEL_PATH)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "model_loaded": model is not None}
 
 @app.post("/predict")
 def predict(data: dict):
-    # TEMPORARY dummy logic until real schema added
+    if model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded. Ensure models/rf_component_bundle.joblib exists.")
     X = list(data.values())
-    pred = model.predict([X])
-    return {"prediction": float(pred[0])}
+    y = model.predict([X])[0]
+    return {"prediction": float(y)}
