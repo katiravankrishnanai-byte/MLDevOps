@@ -156,77 +156,92 @@ pipeline {
     }
 
     stage('Load Test (k6)') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          bat '''
-            @echo on
-            set KUBECONFIG=%KUBECONFIG_FILE%
-            setlocal EnableDelayedExpansion
+  steps {
+    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+      bat '''
+        @echo on
+        set KUBECONFIG=%KUBECONFIG_FILE%
+        setlocal EnableDelayedExpansion
 
-            kubectl -n %NAMESPACE% delete pod k6 --ignore-not-found
+        rem ---- Clean up any previous run ----
+        kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
+        kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
-            kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yaml | kubectl apply -f -
+        rem ---- Create/Update ConfigMap with k6 script ----
+        kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js --dry-run=client -o yaml | kubectl apply -f -
 
-            > k6-pod.yaml (
-              echo apiVersion: v1
-              echo kind: Pod
-              echo metadata:
-              echo   name: k6
-              echo   namespace: %NAMESPACE%
-              echo spec:
-              echo   restartPolicy: Never
-              echo   containers:
-              echo   - name: k6
-              echo     image: grafana/k6:latest
-              echo     env:
-              echo     - name: BASE_URL
-              echo       value: "http://%SERVICE%:8000"
-              echo     args: ["run","/scripts/k6.js"]
-              echo     volumeMounts:
-              echo     - name: k6-scripts
-              echo       mountPath: /scripts
-              echo   volumes:
-              echo   - name: k6-scripts
-              echo     configMap:
-              echo       name: k6-script
-            )
+        rem ---- Write k6 Job manifest ----
+        > k6-job.yaml (
+          echo apiVersion: batch/v1
+          echo kind: Job
+          echo metadata:
+          echo   name: k6
+          echo   namespace: %NAMESPACE%
+          echo spec:
+          echo   backoffLimit: 0
+          echo   template:
+          echo     metadata:
+          echo       labels:
+          echo         app: k6
+          echo     spec:
+          echo       restartPolicy: Never
+          echo       containers:
+          echo       - name: k6
+          echo         image: grafana/k6:latest
+          echo         env:
+          echo         - name: BASE_URL
+          echo           value: "http://%SERVICE%:8000"
+          echo         args: ["run","/scripts/k6.js"]
+          echo         volumeMounts:
+          echo         - name: k6-scripts
+          echo           mountPath: /scripts
+          echo       volumes:
+          echo       - name: k6-scripts
+          echo         configMap:
+          echo           name: k6-script
+        )
 
-            kubectl -n %NAMESPACE% apply -f k6-pod.yaml
+        rem ---- Apply Job ----
+        kubectl -n %NAMESPACE% apply -f k6-job.yaml
 
-            kubectl -n %NAMESPACE% wait --for=condition=Ready pod/k6 --timeout=60s
+        rem ---- Wait until Job completes (kubectl wait fix) ----
+        kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s
+        if errorlevel 1 (
+          echo ERROR: k6 job did not complete within timeout.
+          kubectl -n %NAMESPACE% describe job k6
+          kubectl -n %NAMESPACE% get pods -l job-name=k6 -o wide
+          kubectl -n %NAMESPACE% logs -l job-name=k6 --all-containers=true --tail=-1
+          exit /b 1
+        )
 
-            rem stream logs (k6 will still run; this returns when container ends)
-            kubectl -n %NAMESPACE% logs -f pod/k6
+        rem ---- Print logs (after completion) ----
+        kubectl -n %NAMESPACE% logs -l job-name=k6 --all-containers=true --tail=-1
 
-            rem Wait until pod is Completed (Succeeded/Failed)
-            set PHASE=
-            for /L %%A in (1,1,60) do (
-              for /f %%P in ('kubectl -n %NAMESPACE% get pod k6 -o jsonpath^="{.status.phase}" 2^>nul') do set PHASE=%%P
-              if /I "!PHASE!"=="Succeeded" goto phase_done
-              if /I "!PHASE!"=="Failed"    goto phase_done
-              timeout /t 3 /nobreak >nul
-            )
+        rem ---- Determine pass/fail from Job status ----
+        set SUCCEEDED=
+        for /f "delims=" %%S in ('kubectl -n %NAMESPACE% get job k6 -o jsonpath^="{.status.succeeded}" 2^>nul') do set SUCCEEDED=%%S
+        set FAILED=
+        for /f "delims=" %%F in ('kubectl -n %NAMESPACE% get job k6 -o jsonpath^="{.status.failed}" 2^>nul') do set FAILED=%%F
 
-            :phase_done
-            echo K6 pod phase: !PHASE!
+        if "%SUCCEEDED%"=="1" (
+          echo K6 job succeeded.
+        ) else (
+          echo ERROR: K6 job failed. succeeded=%SUCCEEDED% failed=%FAILED%
+          kubectl -n %NAMESPACE% describe job k6
+          kubectl -n %NAMESPACE% get pods -l job-name=k6 -o wide
+          kubectl -n %NAMESPACE% logs -l job-name=k6 --all-containers=true --tail=-1
+          exit /b 1
+        )
 
-            rem Extract exit code (0=pass). If not terminated yet, value may be blank.
-            set K6_EXIT=
-            for /f %%E in ('kubectl -n %NAMESPACE% get pod k6 -o jsonpath^="{.status.containerStatuses[0].state.terminated.exitCode}" 2^>nul') do set K6_EXIT=%%E
-            echo K6 exit code: !K6_EXIT!
+        rem ---- Cleanup (optional) ----
+        kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
+        kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
-            if not "!K6_EXIT!"=="0" (
-              echo ERROR: k6 failed thresholds/tests.
-              kubectl -n %NAMESPACE% describe pod k6
-              exit /b 1
-            )
-
-            kubectl -n %NAMESPACE% delete pod k6 --ignore-not-found
-            endlocal
-          '''
-        }
-      }
+        endlocal
+      '''
     }
+  }
+}
   }
 
   post {
