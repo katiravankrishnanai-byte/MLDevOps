@@ -147,10 +147,17 @@ pipeline {
           bat '''
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
-
-            kubectl -n %NAMESPACE% run curl --rm -i --restart=Never --image=curlimages/curl -- ^
+            
+            set POD=curl-%BUILD_NUMBER%
+            
+            echo ===== cleanup any old curl pods =====
+              kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
+              kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
+    
+            echo ===== smoke test /health =====
+            kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS http://%SERVICE%:8000/health || exit /b 1
-          '''
+              '''
         }
       }
     }
