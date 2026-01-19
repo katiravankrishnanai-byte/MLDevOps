@@ -184,6 +184,7 @@ stage('Load Test (k6)') {
 
         echo ===== k6: cleanup old resources =====
         kubectl -n %NS% delete job %JOB% --ignore-not-found
+        kubectl -n %NS% delete pod -l app=k6 --ignore-not-found
         kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
         echo ===== k6: create configmap from repo file =====
@@ -228,23 +229,26 @@ stage('Load Test (k6)') {
           echo ===== k6: FAILED - diagnostics =====
           kubectl -n %NS% get jobs
           kubectl -n %NS% get pods -l app=k6 -o wide
-          for /f %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+
+          for /F %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
             echo --- describe %%P ---
             kubectl -n %NS% describe %%P
             echo --- logs %%P ---
             kubectl -n %NS% logs %%P --all-containers=true
           )
+
           exit /b 1
         )
 
         echo ===== k6: SUCCESS - logs =====
-        for /f %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+        for /F %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
           kubectl -n %NS% logs %%P --all-containers=true
         )
       '''
     }
   }
 }
+
      
   }
 
