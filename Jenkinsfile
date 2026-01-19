@@ -223,6 +223,8 @@ stage('Load Test (k6)') {
 
         echo ===== Apply job =====
         kubectl apply -f k6-job.yaml
+        kubectl -n %NS% describe job/%JOB%
+        kubectl -n %NS% get pods -l job-name=%JOB% -o wide
         if errorlevel 1 exit /b 1
 
         echo ===== Wait for job to finish (complete or failed) =====
@@ -235,10 +237,10 @@ stage('Load Test (k6)') {
         kubectl -n %NS% get pods -l app=k6 -o wide
 
         echo ===== k6 logs =====
-     for /f "delims=" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
-  echo --- Logs for %%i ---
-  kubectl -n %NS% logs --timestamps=true %%i
-)
+        for /f "delims=" %%i in ('kubectl -n %NS% get pods -l job-name=%JOB% -o name') do (
+          echo --- Logs for %%i ---
+          kubectl -n %NS% logs --timestamps=true %%i
+        )
 
         echo ===== Decide pass/fail based on Job status =====
         for /f "delims=" %%F in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%F"
