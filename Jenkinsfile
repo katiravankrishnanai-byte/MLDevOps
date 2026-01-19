@@ -176,7 +176,7 @@ stage('Load Test (k6)') {
                 set NS=%NAMESPACE%
                 set JOB=k6
                 set CM=k6-script
-                set SCRIPT=loadtest/k6.js
+                set SCRIPT=loadtest\\k6.js
 
                 :: 1. Validation: Verify Git file exists in workspace
                 if not exist "%SCRIPT%" (
