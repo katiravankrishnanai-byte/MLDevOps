@@ -173,10 +173,6 @@ stage('Load Test (k6)') {
         set JOB=k6
         set CM=k6-script
         set SCRIPT=loadtest/k6.js
-
-        echo ===== k6: precheck repo file =====
-        dir .
-        dir loadtest
         if not exist "%SCRIPT%" (
           echo ERROR: k6 script not found: %SCRIPT%
           exit /b 1
