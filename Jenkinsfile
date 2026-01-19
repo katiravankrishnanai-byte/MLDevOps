@@ -161,7 +161,6 @@ stage('Load Test (k6)') {
       bat '''
         @echo on
         set KUBECONFIG=%KUBECONFIG_FILE%
-        setlocal EnableDelayedExpansion
 
         set NS=mldevopskatir
         set JOB=k6
@@ -181,7 +180,7 @@ stage('Load Test (k6)') {
         kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
         echo ===== k6: create configmap from repo file =====
-        kubectl -n %NS% create configmap %CM% --from-file=k6.js="!SCRIPT!"
+        kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
 
         echo ===== k6: apply job =====
         (
