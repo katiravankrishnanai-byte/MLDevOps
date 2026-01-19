@@ -153,7 +153,6 @@ pipeline {
             echo ===== cleanup any old curl pods =====
               kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
               kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
-              kubectl -n %NAMESPACE% delete pod -l app=k6 --ignore-not-found
     
             echo ===== smoke test /health =====
             kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
