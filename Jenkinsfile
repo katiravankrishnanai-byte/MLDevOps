@@ -163,86 +163,87 @@ pipeline {
     }
 
 stage('Load Test (k6)') {
-  steps {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-      bat '''
-        @echo on
-        set KUBECONFIG=%KUBECONFIG_FILE%
+    steps {
+        // Ensure files are present from Git
+        checkout scm 
 
-        set NS=%NAMESPACE%
-        set JOB=k6
-        set CM=k6-script
-        set SCRIPT=loadtest/k6.js
-        if not exist "%SCRIPT%" (
-          echo ERROR: k6 script not found: %SCRIPT%
-          exit /b 1
-        )
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+            bat '''
+                @echo on
+                set KUBECONFIG=%KUBECONFIG_FILE%
+                
+                :: Variables
+                set NS=%NAMESPACE%
+                set JOB=k6
+                set CM=k6-script
+                set SCRIPT=loadtest/k6.js
 
-        echo ===== k6: cleanup old resources =====
-        kubectl -n %NS% delete job %JOB% --ignore-not-found
-        kubectl -n %NS% delete pod -l app=k6 --ignore-not-found
-        kubectl -n %NS% delete configmap %CM% --ignore-not-found
+                :: 1. Validation: Verify Git file exists in workspace
+                if not exist "%SCRIPT%" (
+                    echo ERROR: k6 script not found at path: %cd%\\%SCRIPT%
+                    dir /s loadtest
+                    exit /b 1
+                )
 
-        echo ===== k6: create configmap from repo file =====
-        kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
+                echo ===== k6: cleanup old resources =====
+                kubectl -n %NS% delete job %JOB% --ignore-not-found
+                kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
-        echo ===== k6: apply job =====
-        (
-          echo apiVersion: batch/v1
-          echo kind: Job
-          echo metadata:
-          echo   name: %JOB%
-          echo   namespace: %NS%
-          echo spec:
-          echo   backoffLimit: 0
-          echo   template:
-          echo     metadata:
-          echo       labels:
-          echo         app: k6
-          echo     spec:
-          echo       restartPolicy: Never
-          echo       containers:
-          echo       - name: k6
-          echo         image: grafana/k6:latest
-          echo         env:
-          echo         - name: BASE_URL
-          echo           value: "http://%SERVICE%:8000"
-          echo         volumeMounts:
-          echo         - name: script
-          echo           mountPath: /scripts
-          echo         command: ["k6","run","/scripts/k6.js"]
-          echo       volumes:
-          echo       - name: script
-          echo         configMap:
-          echo           name: %CM%
-        ) > k6-job.yaml
+                echo ===== k6: create configmap from script in workspace =====
+                kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
 
-        kubectl apply -f k6-job.yaml
+                echo ===== k6: generate and apply job manifest =====
+                (
+                  echo apiVersion: batch/v1
+                  echo kind: Job
+                  echo metadata:
+                  echo   name: %JOB%
+                  echo   namespace: %NS%
+                  echo spec:
+                  echo   backoffLimit: 0
+                  echo   template:
+                  echo     metadata:
+                  echo       labels:
+                  echo         app: k6
+                  echo     spec:
+                  echo       restartPolicy: Never
+                  echo       containers:
+                  echo       - name: k6
+                  echo         image: grafana/k6:latest
+                  echo         env:
+                  echo         - name: BASE_URL
+                  echo           value: "http://%SERVICE%:8000"
+                  echo         volumeMounts:
+                  echo         - name: script
+                  echo           mountPath: /scripts
+                  echo         command: ["k6","run","/scripts/k6.js"]
+                  echo       volumes:
+                  echo       - name: script
+                  echo         configMap:
+                  echo           name: %CM%
+                ) > k6-job.yaml
 
-        echo ===== k6: wait for completion (5 min) =====
-        kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
-        if errorlevel 1 (
-          echo ===== k6: FAILED - diagnostics =====
-          kubectl -n %NS% get jobs
-          kubectl -n %NS% get pods -l app=k6 -o wide
+                kubectl apply -f k6-job.yaml
 
-          for /F %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
-            echo --- describe %%P ---
-            kubectl -n %NS% describe %%P
-            echo --- logs %%P ---
-            kubectl -n %NS% logs %%P --all-containers=true
-          )
+                echo ===== k6: wait for completion (5 min) =====
+                kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
+                
+                if errorlevel 1 (
+                    echo ===== k6: FAILED - retrieving logs for debugging =====
+                    for /f "tokens=*" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+                        echo --- Logs for %%i ---
+                        kubectl -n %NS% logs %%i
+                    )
+                    exit /b 1
+                )
 
-          exit /b 1
-        )
-
-        echo ===== k6: SUCCESS - logs =====
-        for /F %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
-          kubectl -n %NS% logs %%P --all-containers=true
-        )
-      '''
+                echo ===== k6: SUCCESS - final logs =====
+                for /f "tokens=*" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+                    kubectl -n %NS% logs %%i
+                )
+            '''
+        }
     }
-  }
 }
 
      
