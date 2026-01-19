@@ -163,108 +163,90 @@ pipeline {
     }
 
 stage('Load Test (k6)') {
-  steps {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-      bat '''
-setlocal EnableExtensions EnableDelayedExpansion
-set "KUBECONFIG=%KUBECONFIG_FILE%"
+    steps {
+        // Ensure files are present from Git
+        checkout scm 
 
-set "NS=mldevopskatir"
-set "JOB=k6"
-set "CM=k6-script"
-set "SCRIPT=loadtest\\k6.js"
-set "BASE_URL=http://mldevops:8000"
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+            bat '''
+                @echo on
+                set KUBECONFIG=%KUBECONFIG_FILE%
+                
+                :: Variables
+                set NS=%NAMESPACE%
+                set JOB=k6
+                set CM=k6-script
+                set SCRIPT=loadtest/k6.js
 
-echo ===== Validate k6 script exists =====
-if not exist "%SCRIPT%" (
-  echo ERROR: k6 script not found: %CD%\\%SCRIPT%
-  dir /s loadtest
-  exit /b 1
-)
+                :: 1. Validation: Verify Git file exists in workspace
+                if not exist "%SCRIPT%" (
+                    echo ERROR: k6 script not found at path: %cd%\\%SCRIPT%
+                    dir /s loadtest
+                    exit /b 1
+                )
 
-echo ===== Cleanup old k6 resources =====
-kubectl -n %NS% delete job %JOB% --ignore-not-found
-kubectl -n %NS% delete configmap %CM% --ignore-not-found
+                echo ===== k6: cleanup old resources =====
+                kubectl -n %NS% delete job %JOB% --ignore-not-found
+                kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
-echo ===== Create configmap from script =====
-kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
-if errorlevel 1 exit /b 1
+                echo ===== k6: create configmap from script in workspace =====
+                kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
 
-echo ===== Write job manifest =====
-(
-  echo apiVersion: batch/v1
-  echo kind: Job
-  echo metadata:
-  echo   name: %JOB%
-  echo   namespace: %NS%
-  echo spec:
-  echo   backoffLimit: 0
-  echo   template:
-  echo     metadata:
-  echo       labels:
-  echo         job-name: %JOB%
-  echo     spec:
-  echo       restartPolicy: Never
-  echo       containers:
-  echo       - name: k6
-  echo         image: grafana/k6:0.51.0
-  echo         env:
-  echo         - name: BASE_URL
-  echo           value: "%BASE_URL%"
-  echo         volumeMounts:
-  echo         - name: script
-  echo           mountPath: /scripts
-  echo         command: ["k6","run","/scripts/k6.js"]
-  echo       volumes:
-  echo       - name: script
-  echo         configMap:
-  echo           name: %CM%
-) 1>k6-job.yaml
+                echo ===== k6: generate and apply job manifest =====
+                (
+                  echo apiVersion: batch/v1
+                  echo kind: Job
+                  echo metadata:
+                  echo   name: %JOB%
+                  echo   namespace: %NS%
+                  echo spec:
+                  echo   backoffLimit: 0
+                  echo   template:
+                  echo     metadata:
+                  echo       labels:
+                  echo         app: k6
+                  echo     spec:
+                  echo       restartPolicy: Never
+                  echo       containers:
+                  echo       - name: k6
+                  echo         image: grafana/k6:latest
+                  echo         env:
+                  echo         - name: BASE_URL
+                  echo           value: "http://%SERVICE%:8000"
+                  echo         volumeMounts:
+                  echo         - name: script
+                  echo           mountPath: /scripts
+                  echo         command: ["k6","run","/scripts/k6.js"]
+                  echo       volumes:
+                  echo       - name: script
+                  echo         configMap:
+                  echo           name: %CM%
+                ) > k6-job.yaml
 
-echo ===== Apply job =====
-kubectl apply -f k6-job.yaml
-if errorlevel 1 exit /b 1
+                kubectl apply -f k6-job.yaml
 
-echo ===== Wait for job by polling (avoids watch/TLS handshake timeouts) =====
-set "TRIES=72"
-set "DONE="
-for /L %%t in (1,1,%TRIES%) do (
-  for /F "delims=" %%s in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.succeeded}" 2^>nul') do set "SUCCEEDED=%%s"
-  for /F "delims=" %%f in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%f"
+                echo ===== k6: wait for completion (5 min) =====
+                kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
+                
+                if errorlevel 1 (
+                    echo ===== k6: FAILED - retrieving logs for debugging =====
+                    for /f "tokens=*" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+                        echo --- Logs for %%i ---
+                        kubectl -n %NS% logs %%i
+                    )
+                    exit /b 1
+                )
 
-  if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" set "DONE=SUCCEEDED"
-  if not "!FAILED!"=="" if not "!FAILED!"=="0" set "DONE=FAILED"
-
-  if defined DONE goto :JOBDONE
-  timeout /t 5 /nobreak >nul
-)
-
-echo ERROR: timed out waiting for job/%JOB% to finish
-goto :PRINTLOGS
-
-:JOBDONE
-echo ===== Job finished: %DONE% =====
-
-:PRINTLOGS
-echo ===== k6 pod(s) (job-name selector) =====
-kubectl -n %NS% get pods -l job-name=%JOB% -o wide
-
-echo ===== k6 logs (job-name selector) =====
-for /f "delims=" %%i in ('kubectl -n %NS% get pods -l job-name=%JOB% -o name') do (
-  echo --- Logs for %%i ---
-  kubectl -n %NS% logs --timestamps=true %%i
-)
-
-if "%DONE%"=="FAILED" exit /b 1
-if "%DONE%"=="SUCCEEDED" exit /b 0
-
-echo Job did not report succeeded/failed counts. Failing.
-exit /b 1
-'''
+                echo ===== k6: SUCCESS - final logs =====
+                for /f "tokens=*" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+                    kubectl -n %NS% logs %%i
+                )
+            '''
+        }
     }
-  }
 }
 
+     
   }
 
   post {
