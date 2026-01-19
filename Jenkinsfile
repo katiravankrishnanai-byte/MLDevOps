@@ -182,6 +182,7 @@ stage('Load Test (k6)') {
 
         rem Provide a default namespace if not set
         if "%NS%"=="" set "NS=mldevopskatir"
+        set BASE_URL=http://mldevops:8000
 
         rem ===== 1) Validation: Verify k6 script exists in workspace =====
         if not exist "%SCRIPT%" (
