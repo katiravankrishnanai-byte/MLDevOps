@@ -162,17 +162,16 @@ stage('Load Test (k6)') {
         @echo on
         set KUBECONFIG=%KUBECONFIG_FILE%
 
-        set NS=mldevopskatir
+        set NS=%NAMESPACE%
         set JOB=k6
         set CM=k6-script
         set SCRIPT=loadtest/k6.js
 
         echo ===== k6: precheck repo file =====
-        set SCRIPT=loadtest/k6.js
+        dir .
+        dir loadtest
         if not exist "%SCRIPT%" (
           echo ERROR: k6 script not found: %SCRIPT%
-          dir .
-          dir loadtest
           exit /b 1
         )
 
@@ -203,7 +202,7 @@ stage('Load Test (k6)') {
           echo         image: grafana/k6:latest
           echo         env:
           echo         - name: BASE_URL
-          echo           value: "http://mldevops:8000"
+          echo           value: "http://%SERVICE%:8000"
           echo         volumeMounts:
           echo         - name: script
           echo           mountPath: /scripts
@@ -235,8 +234,6 @@ stage('Load Test (k6)') {
         for /f %%P in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
           kubectl -n %NS% logs %%P --all-containers=true
         )
-
-        endlocal
       '''
     }
   }
