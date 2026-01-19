@@ -1,27 +1,30 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-import joblib
 import numpy as np
+import joblib
 import os
 
-# -----------------------
-# App init
-# -----------------------
-app = FastAPI(title="ML Prediction API")
+app = FastAPI()
 
-# -----------------------
-# Load model (once)
-# -----------------------
-MODEL_PATH = os.getenv("MODEL_PATH", "models/rf_component_bundle.joblib")
+MODEL_PATH = os.getenv("MODEL_PATH", "models/model.joblib")
 
-try:
-    model = joblib.load(MODEL_PATH)
-except Exception as e:
-    raise RuntimeError(f"Failed to load model from {MODEL_PATH}: {e}")
+_bundle = joblib.load(MODEL_PATH)
 
-# -----------------------
-# Request schema (STRICT)
-# -----------------------
+# Support both: raw sklearn model OR dict bundle
+if isinstance(_bundle, dict):
+    model = _bundle.get("model") or _bundle.get("estimator") or _bundle.get("pipeline")
+    feature_order = (
+        _bundle.get("feature_order")
+        or _bundle.get("feature_names")
+        or _bundle.get("features")
+    )
+else:
+    model = _bundle
+    feature_order = None
+
+if model is None:
+    raise RuntimeError("Loaded model bundle is a dict but no 'model/estimator/pipeline' key found.")
+
 class PredictRequest(BaseModel):
     machine_age_days: int
     temperature_c: float
@@ -34,20 +37,14 @@ class PredictRequest(BaseModel):
     line_speed_m_min: float
     inspection_interval_hrs: float
 
-# -----------------------
-# Health check
-# -----------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# -----------------------
-# Prediction endpoint
-# -----------------------
 @app.post("/predict")
 def predict(req: PredictRequest):
-    # Order MUST match training feature order
-    features = np.array([[
+    # If your training feature order differs, set it in the bundle and use it here.
+    x = np.array([[
         req.machine_age_days,
         req.temperature_c,
         req.pressure_kpa,
@@ -58,10 +55,7 @@ def predict(req: PredictRequest):
         req.material_grade,
         req.line_speed_m_min,
         req.inspection_interval_hrs,
-    ]])
+    ]], dtype=float)
 
-    prediction = model.predict(features)[0]
-
-    return {
-        "prediction": float(prediction)
-    }
+    y = float(model.predict(x)[0])
+    return {"prediction": y}
