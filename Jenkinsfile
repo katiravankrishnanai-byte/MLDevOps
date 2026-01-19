@@ -165,9 +165,10 @@ stage('Load Test (k6)') {
         set NS=mldevopskatir
         set JOB=k6
         set CM=k6-script
-        set SCRIPT=loadtest\k6.js
+        set SCRIPT=loadtest/k6.js
 
         echo ===== k6: precheck repo file =====
+        set SCRIPT=loadtest/k6.js
         if not exist "%SCRIPT%" (
           echo ERROR: k6 script not found: %SCRIPT%
           dir .
