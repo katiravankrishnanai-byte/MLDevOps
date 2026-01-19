@@ -165,13 +165,13 @@ stage('Load Test (k6)') {
         set NS=mldevopskatir
         set JOB=k6
         set CM=k6-script
-        set SCRIPT=%WORKSPACE%\\loadtest\\k6.js
+        set SCRIPT=loadtest\k6.js
 
         echo ===== k6: precheck repo file =====
-        if not exist "!SCRIPT!" (
-          echo ERROR: k6 script not found: !SCRIPT!
-          dir "%WORKSPACE%"
-          dir "%WORKSPACE%\\loadtest"
+        if not exist "%SCRIPT%" (
+          echo ERROR: k6 script not found: %SCRIPT%
+          dir .
+          dir loadtest
           exit /b 1
         )
 
@@ -211,9 +211,9 @@ stage('Load Test (k6)') {
           echo       - name: script
           echo         configMap:
           echo           name: %CM%
-        ) > "%WORKSPACE%\\k6-job.yaml"
+        ) > k6-job.yaml
 
-        kubectl apply -f "%WORKSPACE%\\k6-job.yaml"
+        kubectl apply -f k6-job.yaml
 
         echo ===== k6: wait for completion (5 min) =====
         kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
