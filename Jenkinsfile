@@ -166,102 +166,112 @@ stage('Load Test (k6)') {
   steps {
     withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
       bat '''
-        setlocal EnableExtensions EnableDelayedExpansion
-        set "KUBECONFIG=%KUBECONFIG_FILE%"
-        set "NS=mldevopskatir"
-        set "JOB=k6"
-        set "CM=k6-script"
-        set "SCRIPT=loadtest\\k6.js"
-        set "BASE_URL=http://mldevops:8000"
+setlocal EnableExtensions EnableDelayedExpansion
 
-        echo ===== Validate k6 script exists =====
-        if not exist "%SCRIPT%" (
-          echo ERROR: k6 script not found: %CD%\\%SCRIPT%
-          dir /s loadtest
-          exit /b 1
-        )
+set "KUBECONFIG=%KUBECONFIG_FILE%"
+set "NS=mldevopskatir"
+set "JOB=k6"
+set "CM=k6-script"
+set "SCRIPT=loadtest\\k6.js"
+set "BASE_URL=http://mldevops:8000"
 
-        echo ===== Cleanup old k6 resources =====
-        kubectl -n %NS% delete job %JOB% --ignore-not-found
-        kubectl -n %NS% delete configmap %CM% --ignore-not-found
+echo ===== Validate k6 script exists =====
+if not exist "%SCRIPT%" (
+  echo ERROR: k6 script not found: %CD%\\%SCRIPT%
+  dir /s loadtest
+  exit /b 1
+)
 
-        echo ===== Create configmap from script =====
-        kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
-        if errorlevel 1 exit /b 1
+echo ===== Cleanup old k6 resources =====
+kubectl -n %NS% delete job %JOB% --ignore-not-found
+kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
-        echo ===== Write job manifest =====
-        > k6-job.yaml (
-          echo apiVersion: batch/v1
-          echo kind: Job
-          echo metadata:
-          echo   name: %JOB%
-          echo   namespace: %NS%
-          echo spec:
-          echo   backoffLimit: 0
-          echo   template:
-          echo     metadata:
-          echo       labels:
-          echo         app: k6
-          echo     spec:
-          echo       restartPolicy: Never
-          echo       containers:
-          echo       - name: k6
-          echo         image: grafana/k6:0.51.0
-          echo         imagePullPolicy: IfNotPresent
-          echo         env:
-          echo         - name: BASE_URL
-          echo           value: "%BASE_URL%"
-          echo         volumeMounts:
-          echo         - name: script
-          echo           mountPath: /scripts
-          echo         command: ["k6","run","/scripts/k6.js"]
-          echo       volumes:
-          echo       - name: script
-          echo         configMap:
-          echo           name: %CM%
-        )
+echo ===== Create configmap from script =====
+kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%"
+if errorlevel 1 exit /b 1
 
-        echo ===== Apply job =====
-        kubectl apply -f k6-job.yaml
-        kubectl -n %NS% describe job/%JOB%
-        kubectl -n %NS% get pods -l job-name=%JOB% -o wide
-        if errorlevel 1 exit /b 1
+echo ===== Write job manifest =====
+(
+  echo apiVersion: batch/v1
+  echo kind: Job
+  echo metadata:
+  echo   name: %JOB%
+  echo   namespace: %NS%
+  echo spec:
+  echo   backoffLimit: 0
+  echo   template:
+  echo     metadata:
+  echo       labels:
+  echo         job-name: %JOB%
+  echo     spec:
+  echo       restartPolicy: Never
+  echo       containers:
+  echo       - name: k6
+  echo         image: grafana/k6:0.51.0
+  echo         imagePullPolicy: IfNotPresent
+  echo         env:
+  echo         - name: BASE_URL
+  echo           value: "%BASE_URL%"
+  echo         volumeMounts:
+  echo         - name: script
+  echo           mountPath: /scripts
+  echo         command: ["k6","run","/scripts/k6.js"]
+  echo       volumes:
+  echo       - name: script
+  echo         configMap:
+  echo           name: %CM%
+) 1>k6-job.yaml
 
-        echo ===== Wait for job to finish (complete or failed) =====
-        kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=6m
-        if errorlevel 1 (
-          kubectl -n %NS% wait --for=condition=failed job/%JOB% --timeout=1s
-        )
+echo ===== Apply job =====
+kubectl apply -f k6-job.yaml
+if errorlevel 1 exit /b 1
 
-        echo ===== k6 pod(s) =====
-        kubectl -n %NS% get pods -l app=k6 -o wide
+echo ===== k6 pod(s) (job-name selector) =====
+kubectl -n %NS% get pods -l job-name=%JOB% -o wide
 
-        echo ===== k6 logs =====
-        for /f "delims=" %%i in ('kubectl -n %NS% get pods -l job-name=%JOB% -o name') do (
-          echo --- Logs for %%i ---
-          kubectl -n %NS% logs --timestamps=true %%i
-        )
+echo ===== Wait for k6 Job to finish (poll, no watch) =====
+set "SUCCEEDED="
+set "FAILED="
+set "MAX=72"
+set "SLEEP=5"
 
-        echo ===== Decide pass/fail based on Job status =====
-        for /f "delims=" %%F in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%F"
-        for /f "delims=" %%S in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.succeeded}" 2^>nul') do set "SUCCEEDED=%%S"
+for /L %%t in (1,1,%MAX%) do (
+  for /f "delims=" %%S in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.succeeded}" 2^>nul') do set "SUCCEEDED=%%S"
+  for /f "delims=" %%F in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%F"
 
-        if not "!FAILED!"=="" if not "!FAILED!"=="0" (
-          echo k6 Job FAILED
-          exit /b 1
-        )
+  if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" goto :JOB_DONE
+  if not "!FAILED!"=="" if not "!FAILED!"=="0" goto :JOB_DONE
 
-        if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" (
-          echo k6 Job SUCCEEDED
-          exit /b 0
-        )
+  timeout /t %SLEEP% /nobreak >nul
+)
 
-        echo k6 Job ended without succeeded/failed counts (treat as failure)
-        exit /b 1
-      '''
+echo ERROR: timeout waiting for job/%JOB%
+
+:JOB_DONE
+echo ===== k6 logs (job-name selector) =====
+for /f "delims=" %%i in ('kubectl -n %NS% get pods -l job-name=%JOB% -o name 2^>nul') do (
+  echo --- Logs for %%i ---
+  kubectl -n %NS% logs --timestamps=true %%i
+)
+
+echo ===== Decide pass/fail based on Job status =====
+if not "!FAILED!"=="" if not "!FAILED!"=="0" (
+  echo k6 Job FAILED
+  exit /b 1
+)
+
+if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" (
+  echo k6 Job SUCCEEDED
+  exit /b 0
+)
+
+echo k6 Job ended without succeeded/failed counts (treat as failure)
+exit /b 1
+'''
     }
   }
 }
+
 
   }
 
