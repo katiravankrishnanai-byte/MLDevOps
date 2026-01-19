@@ -235,10 +235,10 @@ stage('Load Test (k6)') {
         kubectl -n %NS% get pods -l app=k6 -o wide
 
         echo ===== k6 logs =====
-        for /f "delims=" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
-          echo --- Logs for %%i ---
-          kubectl -n %NS% logs --timestamps=true %%i
-        )
+     for /f "delims=" %%i in ('kubectl -n %NS% get pods -l app=k6 -o name') do (
+  echo --- Logs for %%i ---
+  kubectl -n %NS% logs --timestamps=true %%i
+)
 
         echo ===== Decide pass/fail based on Job status =====
         for /f "delims=" %%F in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%F"
