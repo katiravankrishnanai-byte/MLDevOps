@@ -167,8 +167,8 @@ stage('Load Test (k6)') {
     withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
       bat '''
 setlocal EnableExtensions EnableDelayedExpansion
-
 set "KUBECONFIG=%KUBECONFIG_FILE%"
+
 set "NS=mldevopskatir"
 set "JOB=k6"
 set "CM=k6-script"
@@ -208,7 +208,6 @@ echo ===== Write job manifest =====
   echo       containers:
   echo       - name: k6
   echo         image: grafana/k6:0.51.0
-  echo         imagePullPolicy: IfNotPresent
   echo         env:
   echo         - name: BASE_URL
   echo           value: "%BASE_URL%"
@@ -226,52 +225,45 @@ echo ===== Apply job =====
 kubectl apply -f k6-job.yaml
 if errorlevel 1 exit /b 1
 
+echo ===== Wait for job by polling (avoids watch/TLS handshake timeouts) =====
+set "TRIES=72"
+set "DONE="
+for /L %%t in (1,1,%TRIES%) do (
+  for /F "delims=" %%s in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.succeeded}" 2^>nul') do set "SUCCEEDED=%%s"
+  for /F "delims=" %%f in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%f"
+
+  if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" set "DONE=SUCCEEDED"
+  if not "!FAILED!"=="" if not "!FAILED!"=="0" set "DONE=FAILED"
+
+  if defined DONE goto :JOBDONE
+  timeout /t 5 /nobreak >nul
+)
+
+echo ERROR: timed out waiting for job/%JOB% to finish
+goto :PRINTLOGS
+
+:JOBDONE
+echo ===== Job finished: %DONE% =====
+
+:PRINTLOGS
 echo ===== k6 pod(s) (job-name selector) =====
 kubectl -n %NS% get pods -l job-name=%JOB% -o wide
 
-echo ===== Wait for k6 Job to finish (poll, no watch) =====
-set "SUCCEEDED="
-set "FAILED="
-set "MAX=72"
-set "SLEEP=5"
-
-for /L %%t in (1,1,%MAX%) do (
-  for /f "delims=" %%S in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.succeeded}" 2^>nul') do set "SUCCEEDED=%%S"
-  for /f "delims=" %%F in ('kubectl -n %NS% get job/%JOB% -o jsonpath="{.status.failed}" 2^>nul') do set "FAILED=%%F"
-
-  if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" goto :JOB_DONE
-  if not "!FAILED!"=="" if not "!FAILED!"=="0" goto :JOB_DONE
-
-  timeout /t %SLEEP% /nobreak >nul
-)
-
-echo ERROR: timeout waiting for job/%JOB%
-
-:JOB_DONE
 echo ===== k6 logs (job-name selector) =====
-for /f "delims=" %%i in ('kubectl -n %NS% get pods -l job-name=%JOB% -o name 2^>nul') do (
+for /f "delims=" %%i in ('kubectl -n %NS% get pods -l job-name=%JOB% -o name') do (
   echo --- Logs for %%i ---
   kubectl -n %NS% logs --timestamps=true %%i
 )
 
-echo ===== Decide pass/fail based on Job status =====
-if not "!FAILED!"=="" if not "!FAILED!"=="0" (
-  echo k6 Job FAILED
-  exit /b 1
-)
+if "%DONE%"=="FAILED" exit /b 1
+if "%DONE%"=="SUCCEEDED" exit /b 0
 
-if not "!SUCCEEDED!"=="" if not "!SUCCEEDED!"=="0" (
-  echo k6 Job SUCCEEDED
-  exit /b 0
-)
-
-echo k6 Job ended without succeeded/failed counts (treat as failure)
+echo Job did not report succeeded/failed counts. Failing.
 exit /b 1
 '''
     }
   }
 }
-
 
   }
 
