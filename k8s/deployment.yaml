@@ -1,20 +1,14 @@
+# k8s/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mldevops
   namespace: mldevopskatir
-  labels:
-    app: mldevops
 spec:
   replicas: 2
   selector:
     matchLabels:
       app: mldevops
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
   template:
     metadata:
       labels:
@@ -23,7 +17,6 @@ spec:
       containers:
       - name: mldevops
         image: katiravan/mldevops:latest
-        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
         env:
@@ -34,17 +27,10 @@ spec:
             path: /health
             port: 8000
           initialDelaySeconds: 5
-          periodSeconds: 10
+          periodSeconds: 5
         livenessProbe:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 10
-          periodSeconds: 20
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "128Mi"
-          limits:
-            cpu: "500m"
-            memory: "512Mi"
+          initialDelaySeconds: 15
+          periodSeconds: 10
