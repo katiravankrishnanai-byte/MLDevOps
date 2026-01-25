@@ -73,7 +73,7 @@ pipeline {
 
     stage('Push Image') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: 'registry-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           bat '''
             @echo on
             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
