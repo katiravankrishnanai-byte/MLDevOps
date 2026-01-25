@@ -1,3 +1,4 @@
+```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +8,11 @@ metadata:
     app: mldevops
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: mldevops
@@ -14,16 +20,18 @@ spec:
     metadata:
       labels:
         app: mldevops
+      annotations:
+        # baseline change-cause so rollout history never shows <none> on first apply
+        kubernetes.io/change-cause: "initial-deploy"
     spec:
       containers:
         - name: mldevops
-          image: katiravan/mldevops:latest
-          imagePullPolicy: IfNotPresent
+          # IMPORTANT: keep repo aligned with Jenkins push repo (katiravan/mldevops)
+          # Jenkins will overwrite the tag every build via: kubectl set image ...
+          image: katiravan/mldevops:git-placeholder
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
-          env:
-            - name: MODEL_PATH
-              value: "models/model.joblib"
 
           readinessProbe:
             httpGet:
@@ -38,7 +46,7 @@ spec:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 20
+            initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 2
             failureThreshold: 3
@@ -46,7 +54,8 @@ spec:
           resources:
             requests:
               cpu: "100m"
-              memory: "128Mi"
+              memory: "256Mi"
             limits:
               cpu: "500m"
               memory: "512Mi"
+```
