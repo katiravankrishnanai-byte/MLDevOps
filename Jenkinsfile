@@ -1,4 +1,4 @@
-// Jenkinsfile (stable: MODEL_PATH fixed, smoke /predict payload fixed, k6 wait fixed)
+// Jenkinsfile (stable: correct tags, QA MODEL_PATH, smoke /predict, k6 wait+cleanup)
 pipeline {
   agent any
 
@@ -21,7 +21,8 @@ pipeline {
     stage('Compute Tags') {
       steps {
         script {
-          env.SHORTSHA = bat(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+          // IMPORTANT: correct bat syntax on Windows
+          env.SHORTSHA = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
           env.IMG_GIT = "${env.IMAGE_REPO}:git-${env.SHORTSHA}"
         }
         bat 'echo SHORTSHA=%SHORTSHA%'
