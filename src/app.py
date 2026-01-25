@@ -1,27 +1,55 @@
-from pathlib import Path
+import os
 import joblib
-import pandas as pd
 from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
 
-BUNDLE_PATH = Path(__file__).resolve().parent.parent / "models" / "model.joblib"
+MODEL = None
+MODEL_LOADED = False
+MODEL_ERROR = None
 
-bundle = joblib.load(BUNDLE_PATH)
-pipe = bundle["pipeline"]
-contract = bundle["contract"]
-FEATURES = contract["numeric_features"]  # 10 features
+MODEL_PATH = os.getenv("MODEL_PATH", "models/model.joblib")
+
+@app.on_event("startup")
+def load_model():
+    global MODEL, MODEL_LOADED, MODEL_ERROR
+    try:
+        MODEL = joblib.load(MODEL_PATH)
+        MODEL_LOADED = True
+        MODEL_ERROR = None
+    except Exception as e:
+        MODEL = None
+        MODEL_LOADED = False
+        MODEL_ERROR = str(e)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok" if MODEL_LOADED else "degraded",
+        "model_loaded": MODEL_LOADED,
+        "model_path": MODEL_PATH,
+        "error": MODEL_ERROR if not MODEL_LOADED else None,
+    }
 
 @app.post("/predict")
 def predict(data: dict):
-    missing = [f for f in FEATURES if f not in data]
-    if missing:
-        raise HTTPException(400, f"Missing features: {missing}")
+    if not MODEL_LOADED or MODEL is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    try:
+        features = [
+            data["Acceleration"],
+            data["TopSpeed_KmH"],
+            data["Range_Km"],
+            data["Efficiency_WhKm"],
+            data["FastCharge_KmH"],
+            data["RapidCharge"],
+            data["PowerTrain"],
+            data["PlugType"],
+            data["BodyStyle"],
+            data["Segment"],
+        ]
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing key: {e}")
 
-    X = pd.DataFrame([[data[f] for f in FEATURES]], columns=FEATURES)
-    y = pipe.predict(X)[0]
-    return {"prediction": float(y)}
+    prediction = MODEL.predict([features])
+    return {"prediction": float(prediction[0])}
