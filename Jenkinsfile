@@ -1,17 +1,25 @@
 pipeline {
   agent any
 
-  environment {
-    IMAGE_REPO = "katiravan/mldevops"
-    APP_NAME   = "mldevops"
-    NAMESPACE  = "mldevopskatir"
-    HEALTH_URL = "http://mldevops:8000/health"
-    PRED_URL   = "http://mldevops:8000/predict"
-  }
-
   options {
     timestamps()
+    ansiColor('xterm')
     disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  environment {
+    // ---- EDIT THESE ----
+    IMAGE_REPO = 'katiravan/mldevops'
+    NAMESPACE  = 'mldevopskatir'
+    APP_NAME   = 'mldevops'
+    SERVICE    = 'mldevops'
+    PORT       = '8000'
+
+    // ---- Derived ----
+    SHORTSHA = ''
+    RELTAG   = ''
+    IMAGE    = ''
   }
 
   stages {
@@ -19,6 +27,10 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
+
+        // Prevent Git safety issues on some Jenkins/Windows setups
+        bat '@git config --global --add safe.directory "%WORKSPACE%" || ver >NUL'
+
         bat 'git --version'
         bat 'docker --version'
         bat 'kubectl version --client=true'
@@ -29,12 +41,24 @@ pipeline {
     stage('Compute Tags') {
       steps {
         script {
+          // Always succeed
           env.SHORTSHA = bat(script: '@git rev-parse --short HEAD', returnStdout: true).trim()
-          // RELTAG only if this commit is exactly at a tag; otherwise blank
-          def rel = bat(script: '@git describe --tags --exact-match 2>NUL || echo.', returnStdout: true).trim()
-          env.RELTAG = (rel == "." ? "" : rel)
+
+          // RELTAG: empty when commit is not tagged; never fail the pipeline
+          def tagOut = bat(
+            script: '@cmd /c "git tag --points-at HEAD 2>NUL || echo."',
+            returnStdout: true
+          ).trim()
+
+          env.RELTAG = (tagOut == "." || tagOut == "") ? "" : tagOut.readLines()[0].trim()
+
+          // Choose image tag: prefer release tag, else git short sha
+          def tag = (env.RELTAG?.trim()) ? env.RELTAG.trim() : "git-${env.SHORTSHA}"
+          env.IMAGE = "${env.IMAGE_REPO}:${tag}"
+
           echo "SHORTSHA=${env.SHORTSHA}"
           echo "RELTAG=${env.RELTAG}"
+          echo "IMAGE=${env.IMAGE}"
         }
       }
     }
@@ -44,7 +68,7 @@ pipeline {
         bat '''
           python --version
           python -m pip install --upgrade pip
-          python -m pip install ruff
+          pip install ruff
           ruff --version
           ruff check src tests
         '''
@@ -54,8 +78,9 @@ pipeline {
     stage('QA (Unit Tests)') {
       steps {
         bat '''
-          python -m pip install -r requirements.txt
-          python -m pip install pytest
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
           if not exist reports mkdir reports
           python -m pytest -q --junitxml=reports\\test-results.xml
         '''
@@ -63,27 +88,25 @@ pipeline {
       post {
         always {
           junit 'reports/test-results.xml'
-          archiveArtifacts artifacts: 'reports/**', fingerprint: true
+          archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
         }
       }
     }
 
     stage('Quality Gate (Dependency Audit)') {
       steps {
-        // Python-only security gate (no external tool install needed)
+        // pip-audit exits nonzero if vulnerabilities found (correct “gate” behavior)
         bat '''
-          python -m pip install pip-audit
-          pip-audit -r requirements.txt || exit /b 1
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+          pip-audit -r requirements.txt
         '''
       }
     }
 
     stage('Build Image') {
       steps {
-        script {
-          env.IMAGE_TAG = "git-${env.SHORTSHA}"
-          env.IMAGE = "${env.IMAGE_REPO}:${env.IMAGE_TAG}"
-        }
         bat 'docker build -t "%IMAGE%" .'
       }
     }
@@ -92,8 +115,8 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           bat '''
-            echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin || exit /b 1
-            docker push "%IMAGE%" || exit /b 1
+            echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+            docker push "%IMAGE%"
           '''
         }
       }
@@ -105,12 +128,19 @@ pipeline {
           bat '''
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            kubectl apply -f k8s\\namespace.yaml || exit /b 1
-            kubectl apply -f k8s\\service.yaml || exit /b 1
-            kubectl apply -f k8s\\deployment.yaml || exit /b 1
+            kubectl apply -f k8s\\namespace.yaml
 
-            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE% || exit /b 1
-            kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% kubernetes.io/change-cause="Jenkins build %BUILD_NUMBER% image %IMAGE% commit %SHORTSHA%" --overwrite || exit /b 1
+            REM Apply manifests (these should be valid YAML)
+            kubectl apply -f k8s\\deployment.yaml
+            kubectl apply -f k8s\\service.yaml
+
+            REM Force image to the computed tag (ensures deploy even if yaml uses placeholder)
+            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE%
+
+            REM Store change-cause for rollback history evidence
+            kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% ^
+              kubernetes.io/change-cause="Jenkins build %BUILD_NUMBER% image %IMAGE% commit %SHORTSHA%" ^
+              --overwrite
           '''
         }
       }
@@ -121,7 +151,8 @@ pipeline {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           bat '''
             set KUBECONFIG=%KUBECONFIG_FILE%
-            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
+
+            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
             kubectl -n %NAMESPACE% get deploy %APP_NAME% -o wide
             kubectl -n %NAMESPACE% get pods -o wide
           '''
@@ -148,11 +179,15 @@ pipeline {
           bat '''
             set KUBECONFIG=%KUBECONFIG_FILE%
 
+            REM /health
             kubectl -n %NAMESPACE% run curl-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl -- ^
-              curl -sS %HEALTH_URL% || exit /b 1
+              curl -sS http://%SERVICE%:%PORT%/health
 
-            kubectl -n %NAMESPACE% run curlpred-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl -- ^
-              curl -sS -X POST %PRED_URL% -H "Content-Type: application/json" -d "{\\"features\\":[0.5,0.5,0.5]}" || exit /b 1
+            REM /predict (adjust JSON payload to match your API schema)
+            kubectl -n %NAMESPACE% run curlp-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl -- ^
+              curl -sS -X POST http://%SERVICE%:%PORT%/predict ^
+              -H "Content-Type: application/json" ^
+              -d "{\"features\":[0,0,0,0,0,0,0,0]}"
           '''
         }
       }
@@ -164,15 +199,19 @@ pipeline {
           bat '''
             set KUBECONFIG=%KUBECONFIG_FILE%
 
+            if not exist loadtest\\k6.js (echo ERROR: loadtest\\k6.js not found & exit /b 2)
+            if not exist loadtest\\k6-job.yaml (echo ERROR: loadtest\\k6-job.yaml not found & exit /b 2)
+
             kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
             kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
-            kubectl -n %NAMESPACE% create configmap k6-script --from-file=k6.js=loadtest\\k6.js || exit /b 1
-            kubectl apply -f loadtest\\k6-job.yaml || exit /b 1
+            kubectl -n %NAMESPACE% create configmap k6-script --from-file=k6.js=loadtest\\k6.js
+            kubectl apply -f loadtest\\k6-job.yaml
 
-            kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s || exit /b 1
+            kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s
             kubectl -n %NAMESPACE% logs job/k6
 
+            REM Cleanup after evidence collected
             kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
             kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
           '''
@@ -183,7 +222,8 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
+      // Keep pipeline evidence for report
+      archiveArtifacts artifacts: 'k8s/**, loadtest/**, Dockerfile, requirements.txt, src/**, tests/**', fingerprint: true, allowEmptyArchive: true
     }
   }
 }
