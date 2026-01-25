@@ -11,8 +11,8 @@ pipeline {
     APP_NAME   = "mldevops"
     SERVICE    = "mldevops"
 
-    // Optional rollback controls (default OFF)
-    // To execute rollback: set job env vars or parameters:
+    // Manual rollback controls (default OFF)
+    // To execute rollback: set env vars:
     // ROLLBACK_REV=SET
     // ROLLBACK_TO=2
     ROLLBACK_REV = ""
@@ -41,7 +41,7 @@ pipeline {
           def s = bat(returnStatus: true, script: '@echo off\r\ngit describe --tags --exact-match 1> .reltag.txt 2>nul')
           env.RELTAG = (s == 0) ? readFile('.reltag.txt').trim() : ''
         }
-        bat '@echo on\necho SHORTSHA=%SHORTSHA%\necho RELTAG=%RELTAG%'
+        bat '@echo on\necho SHORTSHA=%SHORTSHA%\necho RELTAG=%RELTAG%\ndel /f /q .reltag.txt 2>nul'
       }
     }
 
@@ -63,6 +63,7 @@ pipeline {
         always {
           junit 'reports/test-results.xml'
           archiveArtifacts artifacts: 'reports/test-results.xml', fingerprint: true
+          bat '@echo on\nrmdir /s /q reports 2>nul'
         }
       }
     }
@@ -187,7 +188,7 @@ pipeline {
       }
     }
 
-    stage('Smoke Test (/health)') {
+    stage('Smoke Test (/health + /predict)') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           bat '''
@@ -203,6 +204,12 @@ pipeline {
             echo ===== smoke test /health =====
             kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS http://%SERVICE%:8000/health || exit /b 1
+
+            echo ===== smoke test /predict =====
+            kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
+              curl -sS -X POST http://%SERVICE%:8000/predict ^
+              -H "Content-Type: application/json" ^
+              -d "{\\"Acceleration\\":5.0,\\"TopSpeed_KmH\\":180,\\"Range_Km\\":400,\\"Efficiency_WhKm\\":160,\\"FastCharge_KmH\\":700,\\"RapidCharge\\":1,\\"PowerTrain\\":\\"AWD\\",\\"PlugType\\":\\"Type 2\\",\\"BodyStyle\\":\\"SUV\\",\\"Segment\\":\\"D\\"}" || exit /b 1
           '''
         }
       }
@@ -233,9 +240,9 @@ pipeline {
             echo ===== k6: create configmap from script in workspace =====
             kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
 
-            echo ===== validate service/endpoints =====
+            echo ===== validate service/endpointslice =====
             kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
-            kubectl -n %NS% get endpoints %SERVICE% -o wide || exit /b 1
+            kubectl -n %NS% get endpointslice -l kubernetes.io/service-name=%SERVICE% || exit /b 1
 
             echo ===== k6: generate and apply job manifest =====
             (
@@ -283,6 +290,11 @@ pipeline {
 
             echo ===== k6: SUCCESS - final logs =====
             kubectl -n %NS% logs -l app=k6 --tail=-1
+
+            echo ===== k6: cleanup (job + configmap + local yaml) =====
+            kubectl -n %NS% delete job %JOB% --ignore-not-found
+            kubectl -n %NS% delete configmap %CM% --ignore-not-found
+            del /f /q k6-job.yaml 2>nul
           '''
         }
       }
@@ -291,7 +303,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md', fingerprint: true
+      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md,reports/test-results.xml', fingerprint: true
     }
   }
 }
