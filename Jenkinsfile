@@ -1,4 +1,3 @@
-```groovy
 pipeline {
   agent any
 
@@ -12,8 +11,8 @@ pipeline {
     APP_NAME   = "mldevops"
     SERVICE    = "mldevops"
 
-    // Optional rollback controls (leave empty by default)
-    // To execute rollback, set these as Jenkins parameters or environment variables in the job:
+    // Optional rollback controls (default OFF)
+    // To execute rollback: set job env vars or parameters:
     // ROLLBACK_REV=SET
     // ROLLBACK_TO=2
     ROLLBACK_REV = ""
@@ -39,7 +38,6 @@ pipeline {
       steps {
         script {
           env.SHORTSHA = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
-
           def s = bat(returnStatus: true, script: '@echo off\r\ngit describe --tags --exact-match 1> .reltag.txt 2>nul')
           env.RELTAG = (s == 0) ? readFile('.reltag.txt').trim() : ''
         }
@@ -147,9 +145,6 @@ pipeline {
       }
     }
 
-    // -------------------------------
-    // NEW: Rollback evidence + guarded rollback execution
-    // -------------------------------
     stage('Rollback Evidence (History + Procedure)') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
@@ -172,7 +167,9 @@ pipeline {
     stage('Rollback Execute (Manual Trigger Only)') {
       when {
         expression {
-          return env.ROLLBACK_REV?.trim() == 'SET' && (env.ROLLBACK_TO?.trim() ?: '').isInteger()
+          def revFlag = (env.ROLLBACK_REV ?: '').trim()
+          def to = (env.ROLLBACK_TO ?: '').trim()
+          return revFlag == 'SET' && to ==~ /^[0-9]+$/
         }
       }
       steps {
@@ -189,7 +186,6 @@ pipeline {
         }
       }
     }
-    // -------------------------------
 
     stage('Smoke Test (/health)') {
       steps {
@@ -201,8 +197,8 @@ pipeline {
             set POD=curl-%BUILD_NUMBER%
 
             echo ===== cleanup any old curl pods =====
-              kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
-              kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
+            kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
+            kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
 
             echo ===== smoke test /health =====
             kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
@@ -291,7 +287,6 @@ pipeline {
         }
       }
     }
-
   }
 
   post {
@@ -300,4 +295,3 @@ pipeline {
     }
   }
 }
-```
