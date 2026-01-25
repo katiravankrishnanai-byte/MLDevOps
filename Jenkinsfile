@@ -1,4 +1,4 @@
-// Jenkinsfile (stable: correct tags, QA MODEL_PATH, smoke /predict, k6 wait+cleanup)
+// Jenkinsfile (stable: Windows-safe SHORTSHA, MODEL_PATH fixed, smoke /predict payload fixed, k6 wait fixed)
 pipeline {
   agent any
 
@@ -20,13 +20,14 @@ pipeline {
 
     stage('Compute Tags') {
       steps {
-        script {
-          // IMPORTANT: correct bat syntax on Windows
-          env.SHORTSHA = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-          env.IMG_GIT = "${env.IMAGE_REPO}:git-${env.SHORTSHA}"
-        }
-        bat 'echo SHORTSHA=%SHORTSHA%'
-        bat 'echo IMG_GIT=%IMG_GIT%'
+        // Windows-safe: avoids broken returnStdout capturing that injected WORKSPACE into tag
+        bat '''
+          @echo on
+          for /f %%i in ('git rev-parse --short HEAD') do set SHORTSHA=%%i
+          echo SHORTSHA=%SHORTSHA%
+          set IMG_GIT=%IMAGE_REPO%:git-%SHORTSHA%
+          echo IMG_GIT=%IMG_GIT%
+        '''
       }
     }
 
