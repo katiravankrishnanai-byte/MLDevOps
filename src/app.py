@@ -1,16 +1,40 @@
-# src/app.py
 import os
-import joblib
+from pathlib import Path
 from contextlib import asynccontextmanager
+
+import joblib
+import pandas as pd
 from fastapi import FastAPI, HTTPException
+
+# ---- Stable artifact resolution (works in pytest, uvicorn, container) ----
+def _default_model_path() -> str:
+    # <repo>/src/app.py -> <repo>/models/model.joblib
+    repo_root = Path(__file__).resolve().parents[1]
+    return str(repo_root / "models" / "model.joblib")
+
+def _resolved_model_path() -> str:
+    return os.getenv("MODEL_PATH", _default_model_path())
 
 MODEL = None
 MODEL_LOADED = False
 MODEL_ERROR = None
 
-def _load_model():
+# This must match your trained model features exactly
+FEATURES = [
+    "Acceleration",
+    "TopSpeed_KmH",
+    "Range_Km",
+    "Battery_kWh",
+    "Efficiency_WhKm",
+    "FastCharge_kW",
+    "Seats",
+    "PriceEuro",
+    "PowerTrain",
+]
+
+def _load_model() -> None:
     global MODEL, MODEL_LOADED, MODEL_ERROR
-    path = os.getenv("MODEL_PATH", "models/model.joblib")
+    path = _resolved_model_path()
     try:
         MODEL = joblib.load(path)
         MODEL_LOADED = True
@@ -21,7 +45,7 @@ def _load_model():
         MODEL_ERROR = f"{type(e).__name__}: {e}"
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_: FastAPI):
     _load_model()
     yield
 
@@ -29,10 +53,11 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 def health():
+    status = "ok" if MODEL_LOADED else "degraded"
     return {
-        "status": "ok" if MODEL_LOADED else "degraded",
+        "status": status,
         "model_loaded": MODEL_LOADED,
-        "model_path": os.getenv("MODEL_PATH", "models/model.joblib"),
+        "model_path": _resolved_model_path(),
         "error": MODEL_ERROR,
     }
 
@@ -41,38 +66,20 @@ def predict(payload: dict):
     if not MODEL_LOADED or MODEL is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    required_keys = [
-        "Acceleration",
-        "TopSpeed_KmH",
-        "Range_Km",
-        "Battery_kWh",
-        "Efficiency_WhKm",
-        "FastCharge_kW",
-        "Seats",
-        "PriceEuro",
-        "PowerTrain",
-    ]
-    missing = [k for k in required_keys if k not in payload]
+    missing = [f for f in FEATURES if f not in payload]
     if missing:
-        raise HTTPException(status_code=422, detail=f"Missing key(s): {missing}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required features: {missing}"
+        )
+
+    # Keep column order stable
+    row = {f: payload[f] for f in FEATURES}
+    X = pd.DataFrame([row], columns=FEATURES)
 
     try:
-        # model expects single-row tabular input
-        X = [[
-            payload["Acceleration"],
-            payload["TopSpeed_KmH"],
-            payload["Range_Km"],
-            payload["Battery_kWh"],
-            payload["Efficiency_WhKm"],
-            payload["FastCharge_kW"],
-            payload["Seats"],
-            payload["PriceEuro"],
-            payload["PowerTrain"],
-        ]]
-
-        # Works for sklearn estimators and sklearn pipelines
-        y = MODEL.predict(X)
-        pred = float(y[0])
+        yhat = MODEL.predict(X)
+        pred = float(yhat[0])
         return {"prediction": pred}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {type(e).__name__}: {e}")
