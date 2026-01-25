@@ -1,8 +1,11 @@
+```groovy
 pipeline {
   agent any
 
-  tools {
-    git 'Default'
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
   }
 
   environment {
@@ -10,16 +13,12 @@ pipeline {
     NAMESPACE  = "mldevopskatir"
     APP_NAME   = "mldevops"
     SERVICE    = "mldevops"
-
-    // Optional rollback controls (default OFF)
-    // To execute rollback: set job env vars or parameters:
-    // ROLLBACK_REV=SET
-    // ROLLBACK_TO=2
-    ROLLBACK_REV = ""
-    ROLLBACK_TO  = ""
   }
 
-  options { timestamps() }
+  parameters {
+    booleanParam(name: 'DO_ROLLBACK', defaultValue: false, description: 'Manual rollback trigger (OFF by default)')
+    string(name: 'ROLLBACK_TO', defaultValue: '', description: 'Target deployment revision number (e.g., 112). Used only when DO_ROLLBACK=true')
+  }
 
   stages {
 
@@ -29,7 +28,6 @@ pipeline {
         bat 'git --version'
         bat 'docker --version'
         bat 'kubectl version --client=true'
-        bat 'git status'
         bat 'git rev-parse HEAD'
       }
     }
@@ -112,7 +110,7 @@ pipeline {
       }
     }
 
-    stage('Deploy to Kubernetes (Apply + Set Image)') {
+    stage('Deploy to Kubernetes (Apply + Set Image + Change-Cause)') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           bat '''
@@ -124,7 +122,10 @@ pipeline {
             kubectl apply -f k8s\\service.yaml
 
             echo Setting image to: %IMAGE_REPO%:git-%SHORTSHA%
-            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA%
+            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA% || exit /b 1
+
+            echo Annotating change-cause for rollout history (evidence)
+            kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% kubernetes.io/change-cause="set image %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA% (build %BUILD_NUMBER%, commit %SHORTSHA%)" --overwrite || exit /b 1
           '''
         }
       }
@@ -137,7 +138,7 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
+            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
             kubectl -n %NAMESPACE% get pods -o wide
             kubectl -n %NAMESPACE% get svc
           '''
@@ -158,7 +159,6 @@ pipeline {
             echo ===== Rollback procedure (not executed by default) =====
             echo To rollback: kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=REV
             echo To check:   kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
-            echo Example:    kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=2
           '''
         }
       }
@@ -167,9 +167,9 @@ pipeline {
     stage('Rollback Execute (Manual Trigger Only)') {
       when {
         expression {
-          def revFlag = (env.ROLLBACK_REV ?: '').trim()
-          def to = (env.ROLLBACK_TO ?: '').trim()
-          return revFlag == 'SET' && to ==~ /^[0-9]+$/
+          if (!params.DO_ROLLBACK) return false
+          def to = (params.ROLLBACK_TO ?: '').trim()
+          return (to ==~ /^[0-9]+$/)
         }
       }
       steps {
@@ -197,7 +197,6 @@ pipeline {
             set POD=curl-%BUILD_NUMBER%
 
             echo ===== cleanup any old curl pods =====
-            kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
             kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
 
             echo ===== smoke test /health =====
@@ -219,6 +218,7 @@ pipeline {
             set JOB=k6
             set CM=k6-script
             set SCRIPT=%WORKSPACE%\\loadtest\\k6.js
+            set JOBFILE=%WORKSPACE%\\loadtest\\k6-job.yaml
 
             if not exist "%SCRIPT%" (
               echo ERROR: k6 script not found at path: %SCRIPT%
@@ -233,9 +233,16 @@ pipeline {
             echo ===== k6: create configmap from script in workspace =====
             kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
 
-            echo ===== validate service/endpoints =====
+            echo ===== validate service =====
             kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
-            kubectl -n %NS% get endpoints %SERVICE% -o wide || exit /b 1
+
+            echo ===== validate endpoints (EndpointSlice preferred; fallback to Endpoints) =====
+            kubectl -n %NS% get endpointslice -l kubernetes.io/service-name=%SERVICE% -o wide 1>nul 2>nul
+            if "%ERRORLEVEL%"=="0" (
+              kubectl -n %NS% get endpointslice -l kubernetes.io/service-name=%SERVICE% -o wide
+            ) else (
+              kubectl -n %NS% get endpoints %SERVICE% -o wide
+            )
 
             echo ===== k6: generate and apply job manifest =====
             (
@@ -266,9 +273,9 @@ pipeline {
               echo       - name: script
               echo         configMap:
               echo           name: %CM%
-            ) > k6-job.yaml
+            ) > "%JOBFILE%"
 
-            kubectl apply -f k6-job.yaml || exit /b 1
+            kubectl apply -f "%JOBFILE%" || exit /b 1
 
             echo ===== k6: wait for completion (5 min) =====
             kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
@@ -283,6 +290,10 @@ pipeline {
 
             echo ===== k6: SUCCESS - final logs =====
             kubectl -n %NS% logs -l app=k6 --tail=-1
+
+            echo ===== k6: cleanup resources after success =====
+            kubectl -n %NS% delete job %JOB% --ignore-not-found
+            kubectl -n %NS% delete configmap %CM% --ignore-not-found
           '''
         }
       }
@@ -295,3 +306,4 @@ pipeline {
     }
   }
 }
+```
