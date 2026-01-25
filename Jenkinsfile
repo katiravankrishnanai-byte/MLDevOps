@@ -1,9 +1,6 @@
+```groovy
 pipeline {
   agent any
-
-  tools {
-    git 'Default'
-  }
 
   parameters {
     booleanParam(name: 'DO_ROLLBACK', defaultValue: false, description: 'If true, execute rollback to a specific revision')
@@ -129,7 +126,10 @@ pipeline {
             kubectl apply -f k8s\\service.yaml
 
             echo Setting image to: %IMAGE_REPO%:git-%SHORTSHA%
-            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA%
+            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA% || exit /b 1
+
+            echo Annotating change-cause (rollback evidence)
+            kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% kubernetes.io/change-cause="Jenkins build %BUILD_NUMBER% image %IMAGE_REPO%:git-%SHORTSHA% commit %SHORTSHA%" --overwrite || exit /b 1
           '''
         }
       }
@@ -142,7 +142,7 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
+            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
             kubectl -n %NAMESPACE% get deploy %APP_NAME% -o wide
             kubectl -n %NAMESPACE% get rs -l app=%APP_NAME% -o wide
             kubectl -n %NAMESPACE% get pods -o wide
@@ -299,7 +299,8 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md,k6-job.yaml,.reltag.txt', fingerprint: true, allowEmptyArchive: true
+      archiveArtifacts artifacts: 'reports/**,k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md,k6-job.yaml,.reltag.txt', fingerprint: true, allowEmptyArchive: true
     }
   }
 }
+```
