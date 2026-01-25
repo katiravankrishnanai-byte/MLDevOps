@@ -1,45 +1,61 @@
-// Jenkinsfile (replace/merge into your existing K8s deploy + annotate stages)
-// Assumes you already computed SHORTSHA and have KUBECONFIG_FILE credential.
-stage('Deploy to Kubernetes (Rolling Update)') {
-  steps {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-      bat '''
-        set KUBECONFIG=%KUBECONFIG_FILE%
-        kubectl apply -f k8s\\namespace.yaml
-        kubectl apply -f k8s\\deployment.yaml
-        kubectl apply -f k8s\\service.yaml
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mldevops
+  namespace: mldevopskatir
+  labels:
+    app: mldevops
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: mldevops
+  template:
+    metadata:
+      labels:
+        app: mldevops
+      annotations:
+        # baseline change-cause so rollout history never shows <none> on first apply
+        kubernetes.io/change-cause: "initial-deploy"
+    spec:
+      containers:
+        - name: mldevops
+          # IMPORTANT: keep repo aligned with Jenkins push repo (katiravan/mldevops)
+          # Jenkins will overwrite the tag every build via: kubectl set image ...
+          image: katiravan/mldevops:git-placeholder
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
 
-        kubectl -n mldevopskatir set image deployment/mldevops mldevops=katiravan/mldevops:git-%SHORTSHA%
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
 
-        kubectl -n mldevopskatir patch deployment mldevops ^
-          -p "{\\"spec\\":{\\"template\\":{\\"metadata\\":{\\"annotations\\":{\\"kubernetes.io/change-cause\\":\\"Jenkins build %BUILD_NUMBER% image katiravan/mldevops:git-%SHORTSHA% commit %SHORTSHA%\\"}}}}}}"
-      '''
-    }
-  }
-}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
 
-stage('Rollout Gate (Must Succeed)') {
-  steps {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-      bat '''
-        set KUBECONFIG=%KUBECONFIG_FILE%
-        kubectl -n mldevopskatir rollout status deployment/mldevops --timeout=180s
-        kubectl -n mldevopskatir get deploy mldevops -o wide
-        kubectl -n mldevopskatir get pods -o wide
-      '''
-    }
-  }
-}
-
-stage('Rollback Evidence (History + Procedure)') {
-  steps {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-      bat '''
-        set KUBECONFIG=%KUBECONFIG_FILE%
-        kubectl -n mldevopskatir rollout history deployment/mldevops
-        echo Rollback command:
-        echo kubectl -n mldevopskatir rollout undo deployment/mldevops --to-revision=REV
-      '''
-    }
-  }
-}
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+```
