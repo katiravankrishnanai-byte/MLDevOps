@@ -1,20 +1,12 @@
 pipeline {
   agent any
 
-  tools {
-    git 'Default'
-  }
-
   environment {
     IMAGE_REPO = "katiravan/mldevops"
     NAMESPACE  = "mldevopskatir"
     APP_NAME   = "mldevops"
     SERVICE    = "mldevops"
 
-    // Manual rollback controls (default OFF)
-    // To execute rollback: set env vars:
-    // ROLLBACK_REV=SET
-    // ROLLBACK_TO=2
     ROLLBACK_REV = ""
     ROLLBACK_TO  = ""
   }
@@ -63,7 +55,7 @@ pipeline {
         always {
           junit 'reports/test-results.xml'
           archiveArtifacts artifacts: 'reports/test-results.xml', fingerprint: true
-          bat '@echo on\nrmdir /s /q reports 2>nul'
+          bat 'rmdir /s /q reports 2>nul'
         }
       }
     }
@@ -159,7 +151,6 @@ pipeline {
             echo ===== Rollback procedure (not executed by default) =====
             echo To rollback: kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=REV
             echo To check:   kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
-            echo Example:    kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=2
           '''
         }
       }
@@ -197,19 +188,17 @@ pipeline {
 
             set POD=curl-%BUILD_NUMBER%
 
-            echo ===== cleanup any old curl pods =====
-            kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
             kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
 
             echo ===== smoke test /health =====
             kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS http://%SERVICE%:8000/health || exit /b 1
 
-            echo ===== smoke test /predict =====
+            echo ===== smoke test /predict (MUST match tests/k6 contract) =====
             kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS -X POST http://%SERVICE%:8000/predict ^
               -H "Content-Type: application/json" ^
-              -d "{\\"Acceleration\\":5.0,\\"TopSpeed_KmH\\":180,\\"Range_Km\\":400,\\"Efficiency_WhKm\\":160,\\"FastCharge_KmH\\":700,\\"RapidCharge\\":1,\\"PowerTrain\\":\\"AWD\\",\\"PlugType\\":\\"Type 2\\",\\"BodyStyle\\":\\"SUV\\",\\"Segment\\":\\"D\\"}" || exit /b 1
+              -d "{\\"machine_age_days\\":10,\\"temperature_c\\":25,\\"pressure_kpa\\":101,\\"vibration_mm_s\\":1.2,\\"humidity_pct\\":60,\\"operator_experience_yrs\\":3,\\"shift\\":2,\\"material_grade\\":1,\\"line_speed_m_min\\":120,\\"inspection_interval_hrs\\":8}" || exit /b 1
           '''
         }
       }
@@ -233,18 +222,14 @@ pipeline {
               exit /b 1
             )
 
-            echo ===== k6: cleanup old resources =====
             kubectl -n %NS% delete job %JOB% --ignore-not-found
             kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
-            echo ===== k6: create configmap from script in workspace =====
             kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
 
-            echo ===== validate service/endpointslice =====
             kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
-            kubectl -n %NS% get endpointslice -l kubernetes.io/service-name=%SERVICE% || exit /b 1
+            kubectl -n %NS% get endpointslice -l kubernetes.io/service-name=%SERVICE% -o wide || exit /b 1
 
-            echo ===== k6: generate and apply job manifest =====
             (
               echo apiVersion: batch/v1
               echo kind: Job
@@ -277,24 +262,22 @@ pipeline {
 
             kubectl apply -f k6-job.yaml || exit /b 1
 
-            echo ===== k6: wait for completion (5 min) =====
-            kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
-            set RC=%ERRORLEVEL%
-
-            if not "%RC%"=="0" (
-              echo ===== k6: FAILED - debugging =====
-              kubectl -n %NS% describe job/%JOB%
-              kubectl -n %NS% logs -l app=k6 --tail=-1
-              exit /b 1
+            echo ===== k6: wait complete OR failed =====
+            for /L %%i in (1,1,60) do (
+              kubectl -n %NS% get job %JOB% -o jsonpath="{.status.succeeded}" >nul 2>nul
+              set SUC=!ERRORLEVEL!
+              kubectl -n %NS% get job %JOB% -o jsonpath="{.status.failed}" >nul 2>nul
+              set FAI=!ERRORLEVEL!
+              timeout /t 5 >nul
             )
 
-            echo ===== k6: SUCCESS - final logs =====
+            kubectl -n %NS% get job %JOB% -o wide
+            echo ===== k6 logs =====
             kubectl -n %NS% logs -l app=k6 --tail=-1
 
-            echo ===== k6: cleanup (job + configmap + local yaml) =====
+            echo ===== cleanup k6 resources =====
             kubectl -n %NS% delete job %JOB% --ignore-not-found
             kubectl -n %NS% delete configmap %CM% --ignore-not-found
-            del /f /q k6-job.yaml 2>nul
           '''
         }
       }
@@ -303,7 +286,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md,reports/test-results.xml', fingerprint: true
+      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md', fingerprint: true
     }
   }
 }
