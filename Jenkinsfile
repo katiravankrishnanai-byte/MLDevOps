@@ -1,7 +1,3 @@
-```groovy
-// Jenkinsfile (FINAL) — Windows agent, Docker + DockerHub, Kubernetes deploy with kubeconfig,
-// safe fallbacks, no ansiColor option, no empty image tag, deploy validation bypass if cluster blocks OpenAPI.
-
 pipeline {
   agent any
 
@@ -12,19 +8,14 @@ pipeline {
   }
 
   environment {
-    // ---- CHANGE THESE 3 ONLY ----
-    IMAGE_REPO = 'katiravan/mldevops'          // dockerhub repo
-    APP_NAME   = 'mldevops'                   // k8s deployment container name + app name
-    NAMESPACE  = 'mldevopskatir'              // k8s namespace
-
-    // ---- OPTIONAL: set to your credential IDs if you have them ----
-    // DockerHub username+password credential (type: Username with password)
-    DOCKER_CREDS_ID = 'dockerhub-creds'
-    // Kubeconfig secret file credential (type: Secret file). Upload your ~/.kube/config as the secret file.
-    KUBECONFIG_FILE_CRED_ID = 'kubeconfig-mldevops'
-
-    // Artifacts / reports
-    REPORT_DIR = 'reports'
+    APP_NAME      = 'mldevops'
+    NAMESPACE     = 'mldevopskatir'
+    DOCKER_REPO   = 'katiravan/mldevops'
+    K8S_DIR       = 'k8s'
+    PY_SRC        = 'src'
+    TEST_DIR      = 'tests'
+    REPORTS_DIR   = 'reports'
+    MODEL_PATH    = 'models/model.joblib'
   }
 
   stages {
@@ -42,23 +33,12 @@ pipeline {
     stage('Compute Tags') {
       steps {
         script {
-          def sha = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-          env.SHORTSHA = sha
-
-          // RELTAG optional: allow SemVer tag from git describe; empty is ok.
-          def rel = ''
-          try {
-            rel = bat(returnStdout: true, script: 'git describe --tags --abbrev=0').trim()
-          } catch (ignored) {
-            rel = ''
-          }
-          env.RELTAG = rel
-
-          // Always build a non-empty tag
-          env.IMAGE = "${env.IMAGE_REPO}:git-${env.SHORTSHA}"
-
+          def shortSha = bat(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
+          def relTag   = (env.RELTAG ?: '').trim()
+          env.SHORTSHA = shortSha
+          env.IMAGE    = "${env.DOCKER_REPO}:${relTag ? relTag : "git-${shortSha}"}"
           echo "SHORTSHA=${env.SHORTSHA}"
-          echo "RELTAG=${env.RELTAG}"
+          echo "RELTAG=${relTag}"
           echo "IMAGE=${env.IMAGE}"
         }
       }
@@ -69,8 +49,8 @@ pipeline {
         bat 'python --version'
         bat 'python -m pip install --upgrade pip'
         bat 'pip install ruff'
-        bat 'ruff --version'
-        bat 'ruff check src tests'
+        bat "ruff --version"
+        bat "ruff check ${env.PY_SRC} ${env.TEST_DIR}"
       }
     }
 
@@ -79,13 +59,13 @@ pipeline {
         bat 'python -m pip install --upgrade pip'
         bat 'pip install -r requirements.txt'
         bat 'pip install pytest'
-        bat "if not exist %REPORT_DIR% mkdir %REPORT_DIR%"
-        bat "python -m pytest -q --junitxml=%REPORT_DIR%\\test-results.xml"
+        bat "if not exist ${env.REPORTS_DIR} mkdir ${env.REPORTS_DIR}"
+        bat "python -m pytest -q --junitxml=${env.REPORTS_DIR}\\test-results.xml"
       }
       post {
         always {
-          junit allowEmptyResults: true, testResults: "${env.REPORT_DIR}/test-results.xml"
-          archiveArtifacts allowEmptyArchive: true, artifacts: "${env.REPORT_DIR}/**"
+          junit "${env.REPORTS_DIR}/test-results.xml"
+          archiveArtifacts artifacts: "${env.REPORTS_DIR}/**", fingerprint: true, allowEmptyArchive: true
         }
       }
     }
@@ -101,119 +81,102 @@ pipeline {
 
     stage('Build Image') {
       steps {
-        bat "docker build -t \"%IMAGE%\" ."
+        bat "docker build -t \"${env.IMAGE}\" ."
       }
     }
 
     stage('Push Image') {
+      environment {
+        DOCKERHUB_CREDS = credentials('dockerhub-creds') // Username+Password credential
+      }
       steps {
-        // If you don't have DOCKER_CREDS_ID, remove withCredentials and login manually on the Jenkins node once.
-        withCredentials([usernamePassword(credentialsId: "${env.DOCKER_CREDS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          bat 'echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin'
-          bat "docker push \"%IMAGE%\""
-        }
+        bat """
+          docker login -u "%DOCKERHUB_CREDS_USR%" -p "%DOCKERHUB_CREDS_PSW%"
+          docker push "${env.IMAGE}"
+        """
       }
     }
 
     stage('Deploy to Kubernetes (Rolling Update)') {
       steps {
-        script {
-          // Use kubeconfig credential if present; otherwise try local kubectl context.
-          def haveKubeCred = (env.KUBECONFIG_FILE_CRED_ID?.trim())
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          bat """
+            set KUBECONFIG=%KUBECONFIG%
+            kubectl config current-context
+            kubectl get ns 1>NUL 2>NUL || exit /b 1
 
-          if (haveKubeCred) {
-            withCredentials([file(credentialsId: "${env.KUBECONFIG_FILE_CRED_ID}", variable: 'KUBECONFIG')]) {
-              // Create namespace first (idempotent). If you already have namespace.yaml, this is fine.
-              bat "kubectl apply -f k8s/namespace.yaml --validate=false"
-              // Apply manifests; bypass OpenAPI validation to avoid “/login” HTML from proxy clusters.
-              bat "kubectl -n %NAMESPACE% apply -f k8s/ --validate=false"
-              // Ensure image is updated even if deployment.yaml hardcodes image
-              bat "kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE% --record"
-            }
-          } else {
-            bat "kubectl apply -f k8s/namespace.yaml --validate=false"
-            bat "kubectl -n %NAMESPACE% apply -f k8s/ --validate=false"
-            bat "kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE% --record"
-          }
+            rem Apply namespace first (no schema validation fetch)
+            kubectl apply --validate=false -f ${env.K8S_DIR}\\namespace.yaml
+
+            rem Ensure deployment uses the pushed image
+            kubectl -n ${env.NAMESPACE} set image deployment/${env.APP_NAME} ${env.APP_NAME}="${env.IMAGE}" --record || echo "set image skipped (deployment may not exist yet)"
+
+            rem Apply remaining manifests
+            kubectl apply --validate=false -f ${env.K8S_DIR}\\service.yaml
+            kubectl apply --validate=false -f ${env.K8S_DIR}\\deployment.yaml
+          """
         }
       }
     }
 
     stage('Rollout Gate (Must Succeed)') {
       steps {
-        bat "kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s"
-      }
-    }
-
-    stage('Rollback Evidence (History + Procedure)') {
-      steps {
-        bat "kubectl -n %NAMESPACE% rollout history deployment/%APP_NAME%"
-        // Example rollback command for documentation (doesn't execute):
-        bat "echo Rollback command (if needed): kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=1"
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          bat """
+            set KUBECONFIG=%KUBECONFIG%
+            kubectl -n ${env.NAMESPACE} rollout status deployment/${env.APP_NAME} --timeout=180s
+          """
+        }
       }
     }
 
     stage('Smoke Test (/health + /predict)') {
       steps {
-        // Port-forward in background, test endpoints, then kill port-forward.
-        // Works on Windows using start /B and taskkill.
-        bat """
-        setlocal enabledelayedexpansion
-        for /f "tokens=2 delims=:" %%A in ('kubectl -n %NAMESPACE% get svc %APP_NAME% -o jsonpath^="{.spec.ports[0].port}"') do set SVC_PORT=%%A
-        if "!SVC_PORT!"=="" set SVC_PORT=80
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          bat """
+            set KUBECONFIG=%KUBECONFIG%
 
-        start /B kubectl -n %NAMESPACE% port-forward svc/%APP_NAME% 8000:!SVC_PORT!
-        timeout /t 3 /nobreak >nul
+            rem Port-forward to avoid NodePort/Ingress dependencies
+            start "" /B kubectl -n ${env.NAMESPACE} port-forward svc/${env.APP_NAME} 8000:8000
+            ping 127.0.0.1 -n 6 >NUL
 
-        python - <<PY
-import httpx, json, sys
-base="http://127.0.0.1:8000"
-r=httpx.get(base+"/health", timeout=10)
-print("health:", r.status_code, r.text)
+            python -c "import httpx; r=httpx.get('http://127.0.0.1:8000/health', timeout=10); print(r.status_code, r.text); r.raise_for_status()"
 
-# If your /predict expects a specific schema, update payload accordingly.
-payload={"features":[1,2,3,4,5,6,7,8]}
-try:
-    rp=httpx.post(base+"/predict", json=payload, timeout=20)
-    print("predict:", rp.status_code, rp.text)
-except Exception as e:
-    print("predict call failed:", e)
-    sys.exit(1)
-PY
-
-        for /f "tokens=2" %%p in ('tasklist ^| findstr /i "kubectl.exe"') do taskkill /PID %%p /F >nul 2>nul
-        endlocal
-        """
+            rem Replace payload keys to match your model inputs
+            python -c "import httpx, json; payload={'features':[0,0,0,0,0,0,0,0]}; r=httpx.post('http://127.0.0.1:8000/predict', json=payload, timeout=20); print(r.status_code, r.text); r.raise_for_status()"
+          """
+        }
       }
     }
 
     stage('Load Test (k6)') {
       steps {
-        // Requires loadtest/k6.js in repo. Creates configmap and runs job.
-        bat """
-        if not exist loadtest\\k6.js (
-          echo ERROR: loadtest\\k6.js not found
-          exit /b 1
-        )
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          bat """
+            set KUBECONFIG=%KUBECONFIG%
 
-        kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found=true
-        kubectl -n %NAMESPACE% create configmap k6-script --from-file=loadtest\\k6.js
+            if not exist loadtest\\k6.js (
+              echo ERROR: loadtest\\k6.js not found
+              exit /b 2
+            )
 
-        kubectl -n %NAMESPACE% apply -f k8s\\k6-job.yaml --validate=false
-        kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=240s
+            kubectl -n ${env.NAMESPACE} delete configmap k6-script --ignore-not-found=true
+            kubectl -n ${env.NAMESPACE} create configmap k6-script --from-file=k6.js=loadtest\\k6.js
 
-        kubectl -n %NAMESPACE% logs job/k6
-        kubectl -n %NAMESPACE% delete job k6 --ignore-not-found=true
-        kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found=true
-        """
+            kubectl -n ${env.NAMESPACE} delete job k6 --ignore-not-found=true
+            kubectl -n ${env.NAMESPACE} apply --validate=false -f ${env.K8S_DIR}\\k6-job.yaml
+
+            kubectl -n ${env.NAMESPACE} wait --for=condition=complete job/k6 --timeout=240s
+            kubectl -n ${env.NAMESPACE} logs job/k6
+          """
+        }
       }
     }
   }
 
   post {
     always {
-      archiveArtifacts allowEmptyArchive: true, artifacts: "reports/**, **/Dockerfile, **/requirements.txt, k8s/**, loadtest/**"
+      archiveArtifacts artifacts: "${env.REPORTS_DIR}/**", fingerprint: true, allowEmptyArchive: true
     }
   }
 }
-```
