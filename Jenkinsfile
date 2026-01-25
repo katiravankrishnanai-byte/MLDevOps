@@ -3,7 +3,6 @@ pipeline {
 
   options {
     timestamps()
-    ansiColor('xterm')
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
@@ -41,10 +40,8 @@ pipeline {
     stage('Compute Tags') {
       steps {
         script {
-          // Always succeed
           env.SHORTSHA = bat(script: '@git rev-parse --short HEAD', returnStdout: true).trim()
 
-          // RELTAG: empty when commit is not tagged; never fail the pipeline
           def tagOut = bat(
             script: '@cmd /c "git tag --points-at HEAD 2>NUL || echo."',
             returnStdout: true
@@ -52,7 +49,6 @@ pipeline {
 
           env.RELTAG = (tagOut == "." || tagOut == "") ? "" : tagOut.readLines()[0].trim()
 
-          // Choose image tag: prefer release tag, else git short sha
           def tag = (env.RELTAG?.trim()) ? env.RELTAG.trim() : "git-${env.SHORTSHA}"
           env.IMAGE = "${env.IMAGE_REPO}:${tag}"
 
@@ -75,7 +71,7 @@ pipeline {
       }
     }
 
-    stage('QA (Unit Tests)') {
+    stage('QA (Unit Tests))') {
       steps {
         bat '''
           python -m pip install --upgrade pip
@@ -95,7 +91,6 @@ pipeline {
 
     stage('Quality Gate (Dependency Audit)') {
       steps {
-        // pip-audit exits nonzero if vulnerabilities found (correct “gate” behavior)
         bat '''
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -129,15 +124,11 @@ pipeline {
             set KUBECONFIG=%KUBECONFIG_FILE%
 
             kubectl apply -f k8s\\namespace.yaml
-
-            REM Apply manifests (these should be valid YAML)
             kubectl apply -f k8s\\deployment.yaml
             kubectl apply -f k8s\\service.yaml
 
-            REM Force image to the computed tag (ensures deploy even if yaml uses placeholder)
             kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE%
 
-            REM Store change-cause for rollback history evidence
             kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% ^
               kubernetes.io/change-cause="Jenkins build %BUILD_NUMBER% image %IMAGE% commit %SHORTSHA%" ^
               --overwrite
@@ -151,7 +142,6 @@ pipeline {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           bat '''
             set KUBECONFIG=%KUBECONFIG_FILE%
-
             kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
             kubectl -n %NAMESPACE% get deploy %APP_NAME% -o wide
             kubectl -n %NAMESPACE% get pods -o wide
@@ -179,15 +169,13 @@ pipeline {
           bat '''
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            REM /health
             kubectl -n %NAMESPACE% run curl-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS http://%SERVICE%:%PORT%/health
 
-            REM /predict (adjust JSON payload to match your API schema)
             kubectl -n %NAMESPACE% run curlp-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS -X POST http://%SERVICE%:%PORT%/predict ^
               -H "Content-Type: application/json" ^
-              -d "{\"features\":[0,0,0,0,0,0,0,0]}"
+              -d "{\\"features\\":[0,0,0,0,0,0,0,0]}"
           '''
         }
       }
@@ -211,7 +199,6 @@ pipeline {
             kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s
             kubectl -n %NAMESPACE% logs job/k6
 
-            REM Cleanup after evidence collected
             kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
             kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
           '''
@@ -222,8 +209,7 @@ pipeline {
 
   post {
     always {
-      // Keep pipeline evidence for report
-      archiveArtifacts artifacts: 'k8s/**, loadtest/**, Dockerfile, requirements.txt, src/**, tests/**', fingerprint: true, allowEmptyArchive: true
+      archiveArtifacts artifacts: 'k8s/**, loadtest/**, Dockerfile, requirements.txt, src/**, tests/**, reports/**', fingerprint: true, allowEmptyArchive: true
     }
   }
 }
