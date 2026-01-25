@@ -1,11 +1,10 @@
-# k8s/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mldevops
   namespace: mldevopskatir
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: mldevops
@@ -15,22 +14,34 @@ spec:
         app: mldevops
     spec:
       containers:
-      - name: mldevops
-        image: katiravan/mldevops:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: MODEL_PATH
-          value: "models/model.joblib"
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 15
-          periodSeconds: 10
+        - name: mldevops
+          image: katiravan/mldevops:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MODEL_PATH
+              value: "/app/models/model.joblib"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
