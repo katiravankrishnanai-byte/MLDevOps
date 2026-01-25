@@ -1,29 +1,25 @@
 # tests/test_predict.py
-
+import os
 from fastapi.testclient import TestClient
 from src.app import app
 
-client = TestClient(app)
-
-
 def test_predict():
-    payload = {
-        "machine_age_days": 10,
-        "temperature_c": 25,
-        "pressure_kpa": 101,
-        "vibration_mm_s": 1.2,
-        "humidity_pct": 60,
-        "operator_experience_yrs": 3,
-        "shift": 2,
-        "material_grade": 1,
-        "line_speed_m_min": 120,
-        "inspection_interval_hrs": 8
-    }
+    os.environ["MODEL_PATH"] = os.getenv("MODEL_PATH", "models/model.joblib")
+    with TestClient(app) as client:
+        payload = {
+            "Acceleration": 5.0,
+            "TopSpeed_KmH": 180,
+            "Range_Km": 420,
+            "Battery_kWh": 75,
+            "Efficiency_WhKm": 170,
+            "FastCharge_kW": 150,
+            "Seats": 5,
+            "PriceEuro": 45000,
+            "PowerTrain": "AWD",
+        }
 
-    r = client.post("/predict", json=payload)
-
-    assert r.status_code == 200
-    body = r.json()
-
-    assert "prediction" in body
-    assert isinstance(body["prediction"], (int, float))
+        r = client.post("/predict", json=payload)
+        assert r.status_code == 200
+        body = r.json()
+        assert "prediction" in body
+        assert isinstance(body["prediction"], (int, float))
