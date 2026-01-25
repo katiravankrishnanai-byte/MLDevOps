@@ -1,10 +1,9 @@
-```groovy
 pipeline {
   agent any
 
   parameters {
-    booleanParam(name: 'DO_ROLLBACK', defaultValue: false, description: 'If true, execute rollback to a specific revision')
-    string(name: 'ROLLBACK_TO', defaultValue: '', description: 'Deployment revision number to rollback to (e.g., 112)')
+    booleanParam(name: 'DO_ROLLBACK', defaultValue: false, description: 'Execute rollback to a specific deployment revision')
+    string(name: 'ROLLBACK_TO', defaultValue: '', description: 'Deployment revision number (e.g., 2)')
   }
 
   environment {
@@ -54,7 +53,6 @@ pipeline {
 
           if not exist reports mkdir reports
           python -m pytest -q --junitxml=reports\\test-results.xml
-          dir reports
         '''
       }
       post {
@@ -69,10 +67,7 @@ pipeline {
       steps {
         script {
           if (!(env.SHORTSHA ==~ /^[0-9a-f]{7}$/)) {
-            error("SHORTSHA invalid. Expected 7-hex, got: '${env.SHORTSHA}'")
-          }
-          if ((env.RELTAG ?: '').trim() && !(env.RELTAG ==~ /^[0-9A-Za-z._-]+$/)) {
-            error("RELTAG invalid. Got: '${env.RELTAG}'")
+            error("Invalid SHORTSHA: ${env.SHORTSHA}")
           }
         }
       }
@@ -82,15 +77,7 @@ pipeline {
       steps {
         bat '''
           @echo on
-          echo Building image: "%IMAGE_REPO%:git-%SHORTSHA%"
           docker build -t "%IMAGE_REPO%:git-%SHORTSHA%" .
-
-          if not "%RELTAG%"=="" (
-            echo Applying release tag: %RELTAG%
-            docker tag "%IMAGE_REPO%:git-%SHORTSHA%" "%IMAGE_REPO%:%RELTAG%"
-          ) else (
-            echo No release tag. Skipping SemVer tag.
-          )
         '''
       }
     }
@@ -101,20 +88,13 @@ pipeline {
           bat '''
             @echo on
             echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
-
             docker push %IMAGE_REPO%:git-%SHORTSHA%
-
-            if not "%RELTAG%"=="" (
-              docker push %IMAGE_REPO%:%RELTAG%
-            ) else (
-              echo No release tag. Skipping push for SemVer tag.
-            )
           '''
         }
       }
     }
 
-    stage('Deploy to Kubernetes (Apply + Set Image)') {
+    stage('Deploy to Kubernetes (Rolling Update)') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           bat '''
@@ -125,11 +105,11 @@ pipeline {
             kubectl apply -f k8s\\deployment.yaml
             kubectl apply -f k8s\\service.yaml
 
-            echo Setting image to: %IMAGE_REPO%:git-%SHORTSHA%
-            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA% || exit /b 1
+            kubectl -n %NAMESPACE% set image deployment/%APP_NAME% %APP_NAME%=%IMAGE_REPO%:git-%SHORTSHA%
 
-            echo Annotating change-cause (rollback evidence)
-            kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% kubernetes.io/change-cause="Jenkins build %BUILD_NUMBER% image %IMAGE_REPO%:git-%SHORTSHA% commit %SHORTSHA%" --overwrite || exit /b 1
+            kubectl -n %NAMESPACE% annotate deployment/%APP_NAME% ^
+              kubernetes.io/change-cause="Jenkins build %BUILD_NUMBER% image %IMAGE_REPO%:git-%SHORTSHA% commit %SHORTSHA%" ^
+              --overwrite
           '''
         }
       }
@@ -142,11 +122,9 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
+            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
             kubectl -n %NAMESPACE% get deploy %APP_NAME% -o wide
-            kubectl -n %NAMESPACE% get rs -l app=%APP_NAME% -o wide
             kubectl -n %NAMESPACE% get pods -o wide
-            kubectl -n %NAMESPACE% get svc %SERVICE% -o wide
           '''
         }
       }
@@ -159,35 +137,28 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            echo ===== Rollout history (evidence) =====
             kubectl -n %NAMESPACE% rollout history deployment/%APP_NAME%
 
-            echo ===== Rollback procedure (not executed by default) =====
-            echo To rollback: kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=REV
-            echo To verify:   kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
-            echo Example:    kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=112
+            echo Rollback command:
+            echo kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=REV
           '''
         }
       }
     }
 
-    stage('Rollback Execute (Manual Trigger Only)') {
+    stage('Rollback Execute (Manual Only)') {
       when {
-        expression {
-          return params.DO_ROLLBACK && (params.ROLLBACK_TO?.trim() ==~ /^[0-9]+$/)
-        }
+        expression { return params.DO_ROLLBACK && params.ROLLBACK_TO ==~ /^[0-9]+$/ }
       }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          bat """
+          bat '''
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            echo ===== Executing rollback to revision ${params.ROLLBACK_TO} =====
-            kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=${params.ROLLBACK_TO} || exit /b 1
-            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
-            kubectl -n %NAMESPACE% get pods -o wide
-          """
+            kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=%ROLLBACK_TO%
+            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
+          '''
         }
       }
     }
@@ -199,15 +170,8 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            set POD=curl-%BUILD_NUMBER%
-
-            echo ===== cleanup any old curl pods =====
-            kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
-            kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
-
-            echo ===== smoke test /health =====
-            kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
-              curl -sS http://%SERVICE%:8000/health || exit /b 1
+            kubectl -n %NAMESPACE% run curl-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl -- ^
+              curl -sS http://%SERVICE%:8000/health
           '''
         }
       }
@@ -220,77 +184,14 @@ pipeline {
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            set NS=%NAMESPACE%
-            set JOB=k6
-            set CM=k6-script
-            set SCRIPT=%WORKSPACE%\\loadtest\\k6.js
+            kubectl -n %NAMESPACE% delete job k6 --ignore-not-found
+            kubectl -n %NAMESPACE% delete configmap k6-script --ignore-not-found
 
-            if not exist "%SCRIPT%" (
-              echo ERROR: k6 script not found at path: %SCRIPT%
-              dir /s "%WORKSPACE%\\loadtest"
-              exit /b 1
-            )
+            kubectl -n %NAMESPACE% create configmap k6-script --from-file=k6.js=loadtest\\k6.js
 
-            echo ===== k6: cleanup old resources =====
-            kubectl -n %NS% delete job %JOB% --ignore-not-found
-            kubectl -n %NS% delete configmap %CM% --ignore-not-found
-
-            echo ===== k6: create configmap from script in workspace =====
-            kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
-
-            echo ===== validate service =====
-            kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
-
-            echo ===== k6: generate and apply job manifest =====
-            (
-              echo apiVersion: batch/v1
-              echo kind: Job
-              echo metadata:
-              echo   name: %JOB%
-              echo   namespace: %NS%
-              echo spec:
-              echo   backoffLimit: 0
-              echo   template:
-              echo     metadata:
-              echo       labels:
-              echo         app: k6
-              echo     spec:
-              echo       restartPolicy: Never
-              echo       containers:
-              echo       - name: k6
-              echo         image: grafana/k6:0.48.0
-              echo         env:
-              echo         - name: BASE_URL
-              echo           value: "http://%SERVICE%:8000"
-              echo         volumeMounts:
-              echo         - name: script
-              echo           mountPath: /scripts
-              echo         command: ["k6","run","/scripts/k6.js"]
-              echo       volumes:
-              echo       - name: script
-              echo         configMap:
-              echo           name: %CM%
-            ) > k6-job.yaml
-
-            kubectl apply -f k6-job.yaml || exit /b 1
-
-            echo ===== k6: wait for completion (5 min) =====
-            kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
-            set RC=%ERRORLEVEL%
-
-            if not "%RC%"=="0" (
-              echo ===== k6: FAILED - debugging =====
-              kubectl -n %NS% describe job/%JOB%
-              kubectl -n %NS% logs -l app=k6 --tail=-1
-              exit /b 1
-            )
-
-            echo ===== k6: SUCCESS - final logs =====
-            kubectl -n %NS% logs -l app=k6 --tail=-1
-
-            echo ===== k6: cleanup job + configmap (keep cluster clean) =====
-            kubectl -n %NS% delete job %JOB% --ignore-not-found
-            kubectl -n %NS% delete configmap %CM% --ignore-not-found
+            kubectl apply -f loadtest\\k6-job.yaml
+            kubectl -n %NAMESPACE% wait --for=condition=complete job/k6 --timeout=300s
+            kubectl -n %NAMESPACE% logs job/k6
           '''
         }
       }
@@ -299,8 +200,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'reports/**,k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md,k6-job.yaml,.reltag.txt', fingerprint: true, allowEmptyArchive: true
+      archiveArtifacts artifacts: 'reports/**,k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md', fingerprint: true
     }
   }
 }
-```
