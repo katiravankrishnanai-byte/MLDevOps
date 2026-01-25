@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+k6-job.yaml
+reports/
