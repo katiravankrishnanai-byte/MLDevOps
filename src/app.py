@@ -1,85 +1,125 @@
 import os
-from pathlib import Path
-from contextlib import asynccontextmanager
+from typing import Optional, Any, Dict, List
 
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-# ---- Stable artifact resolution (works in pytest, uvicorn, container) ----
-def _default_model_path() -> str:
-    # <repo>/src/app.py -> <repo>/models/model.joblib
-    repo_root = Path(__file__).resolve().parents[1]
-    return str(repo_root / "models" / "model.joblib")
 
-def _resolved_model_path() -> str:
-    return os.getenv("MODEL_PATH", _default_model_path())
+# -----------------------------
+# Request schema (matches tests + smoke)
+# -----------------------------
+class PredictRequest(BaseModel):
+    Acceleration: float
+    TopSpeed_KmH: float
+    Range_Km: float
+    Battery_kWh: float
+    Efficiency_WhKm: float
+    FastCharge_kW: float
+    Seats: float
+    PriceEuro: float
+    PowerTrain: str
 
-MODEL = None
+
+# -----------------------------
+# App + globals
+# -----------------------------
+app = FastAPI()
+
+ARTIFACT: Optional[Any] = None
+PIPELINE: Optional[Any] = None
+CONTRACT: Dict[str, Any] = {}
+
 MODEL_LOADED = False
-MODEL_ERROR = None
 
-# This must match your trained model features exactly
-FEATURES = [
-    "Acceleration",
-    "TopSpeed_KmH",
-    "Range_Km",
-    "Battery_kWh",
-    "Efficiency_WhKm",
-    "FastCharge_kW",
-    "Seats",
-    "PriceEuro",
-    "PowerTrain",
-]
 
-def _load_model() -> None:
-    global MODEL, MODEL_LOADED, MODEL_ERROR
-    path = _resolved_model_path()
+def _is_preprocessor_present(obj: Any) -> bool:
+    # Pipeline with preprocess usually has "transform" or a ColumnTransformer in steps.
+    if hasattr(obj, "steps"):
+        for _, step in getattr(obj, "steps", []):
+            if hasattr(step, "transform"):
+                return True
+    return hasattr(obj, "transform")
+
+
+def _feature_order() -> List[str]:
+    # Prefer contract feature order if present.
+    fo = CONTRACT.get("feature_order")
+    if isinstance(fo, list) and len(fo) > 0:
+        return fo
+
+    # Next best: sklearn feature_names_in_
+    if PIPELINE is not None and hasattr(PIPELINE, "feature_names_in_"):
+        return list(getattr(PIPELINE, "feature_names_in_"))
+
+    # Fallback: the 9 fields used in your tests/smoke payload.
+    return [
+        "Acceleration",
+        "TopSpeed_KmH",
+        "Range_Km",
+        "Battery_kWh",
+        "Efficiency_WhKm",
+        "FastCharge_kW",
+        "Seats",
+        "PriceEuro",
+        "PowerTrain",
+    ]
+
+
+@app.on_event("startup")
+def load_artifact() -> None:
+    global ARTIFACT, PIPELINE, CONTRACT, MODEL_LOADED
+
+    model_path = os.getenv("MODEL_PATH", os.path.join("models", "model.joblib"))
+
     try:
-        MODEL = joblib.load(path)
-        MODEL_LOADED = True
-        MODEL_ERROR = None
-    except Exception as e:
-        MODEL = None
+        ARTIFACT = joblib.load(model_path)
+
+        # Your repo’s artifact is a dict bundle in the stable version.
+        if isinstance(ARTIFACT, dict):
+            PIPELINE = ARTIFACT.get("pipeline") or ARTIFACT.get("model") or ARTIFACT.get("estimator")
+            CONTRACT = ARTIFACT.get("contract") or {}
+        else:
+            PIPELINE = ARTIFACT
+            CONTRACT = {}
+
+        MODEL_LOADED = PIPELINE is not None
+    except Exception:
+        ARTIFACT = None
+        PIPELINE = None
+        CONTRACT = {}
         MODEL_LOADED = False
-        MODEL_ERROR = f"{type(e).__name__}: {e}"
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    _load_model()
-    yield
-
-app = FastAPI(lifespan=lifespan)
 
 @app.get("/health")
-def health():
-    status = "ok" if MODEL_LOADED else "degraded"
+def health() -> Dict[str, Any]:
     return {
-        "status": status,
-        "model_loaded": MODEL_LOADED,
-        "model_path": _resolved_model_path(),
-        "error": MODEL_ERROR,
+        "status": "ok",
+        "model_loaded": bool(MODEL_LOADED),
+        "preprocessor_present": bool(PIPELINE is not None and _is_preprocessor_present(PIPELINE)),
+        "model_path": os.getenv("MODEL_PATH", os.path.join("models", "model.joblib")),
     }
 
+
 @app.post("/predict")
-def predict(payload: dict):
-    if not MODEL_LOADED or MODEL is None:
+def predict(req: PredictRequest) -> Dict[str, Any]:
+    if not MODEL_LOADED or PIPELINE is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    missing = [f for f in FEATURES if f not in payload]
-    if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing required features: {missing}"
-        )
-
-    # Keep column order stable
-    row = {f: payload[f] for f in FEATURES}
-    X = pd.DataFrame([row], columns=FEATURES)
-
     try:
-        yhat = MODEL.predict(X)
+        payload = req.model_dump()
+        cols = _feature_order()
+
+        # Build 1-row DataFrame in correct column order
+        row = {c: payload.get(c) for c in cols}
+        X = pd.DataFrame([row], columns=cols)
+
+        yhat = PIPELINE.predict(X)
         pred = float(yhat[0])
+
         return {"prediction": pred}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
