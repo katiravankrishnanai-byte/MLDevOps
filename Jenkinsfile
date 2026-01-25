@@ -1,17 +1,23 @@
-
-
+```groovy
 pipeline {
   agent any
 
-    tools {
-  git 'Default'
+  tools {
+    git 'Default'
   }
 
   environment {
-    IMAGE_REPO = "katiravan/mldevops"    
-    NAMESPACE  = "mldevopskatir"          
-    APP_NAME   = "mldevops"            
-    SERVICE    = "mldevops"             
+    IMAGE_REPO = "katiravan/mldevops"
+    NAMESPACE  = "mldevopskatir"
+    APP_NAME   = "mldevops"
+    SERVICE    = "mldevops"
+
+    // Optional rollback controls (leave empty by default)
+    // To execute rollback, set these as Jenkins parameters or environment variables in the job:
+    // ROLLBACK_REV=SET
+    // ROLLBACK_TO=2
+    ROLLBACK_REV = ""
+    ROLLBACK_TO  = ""
   }
 
   options { timestamps() }
@@ -29,17 +35,17 @@ pipeline {
       }
     }
 
-   stage('Compute Tags') {
-  steps {
-    script {
-      env.SHORTSHA = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
+    stage('Compute Tags') {
+      steps {
+        script {
+          env.SHORTSHA = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
 
-      def s = bat(returnStatus: true, script: '@echo off\r\ngit describe --tags --exact-match 1> .reltag.txt 2>nul')
-      env.RELTAG = (s == 0) ? readFile('.reltag.txt').trim() : ''
+          def s = bat(returnStatus: true, script: '@echo off\r\ngit describe --tags --exact-match 1> .reltag.txt 2>nul')
+          env.RELTAG = (s == 0) ? readFile('.reltag.txt').trim() : ''
+        }
+        bat '@echo on\necho SHORTSHA=%SHORTSHA%\necho RELTAG=%RELTAG%'
+      }
     }
-    bat '@echo on\necho SHORTSHA=%SHORTSHA%\necho RELTAG=%RELTAG%'
-  }
-}
 
     stage('QA (Unit Tests)') {
       steps {
@@ -63,31 +69,31 @@ pipeline {
       }
     }
 
-   stage('Build Image') {
-  steps {
-    script {
-      if (!(env.SHORTSHA ==~ /^[0-9a-f]{7}$/)) {
-        error("SHORTSHA invalid. Expected 7-hex, got: '${env.SHORTSHA}'")
-      }
-      if (env.RELTAG && !(env.RELTAG ==~ /^[0-9A-Za-z._-]+$/)) {
-        error("RELTAG invalid. Got: '${env.RELTAG}'")
+    stage('Build Image') {
+      steps {
+        script {
+          if (!(env.SHORTSHA ==~ /^[0-9a-f]{7}$/)) {
+            error("SHORTSHA invalid. Expected 7-hex, got: '${env.SHORTSHA}'")
+          }
+          if (env.RELTAG && !(env.RELTAG ==~ /^[0-9A-Za-z._-]+$/)) {
+            error("RELTAG invalid. Got: '${env.RELTAG}'")
+          }
+        }
+
+        bat '''
+          @echo on
+          echo Building image: "%IMAGE_REPO%:git-%SHORTSHA%"
+          docker build -t "%IMAGE_REPO%:git-%SHORTSHA%" .
+
+          if not "%RELTAG%"=="" (
+            echo Applying release tag: %RELTAG%
+            docker tag "%IMAGE_REPO%:git-%SHORTSHA%" "%IMAGE_REPO%:%RELTAG%"
+          ) else (
+            echo No release tag. Skipping SemVer tag.
+          )
+        '''
       }
     }
-
-    bat '''
-      @echo on
-      echo Building image: "%IMAGE_REPO%:git-%SHORTSHA%"
-      docker build -t "%IMAGE_REPO%:git-%SHORTSHA%" .
-
-      if not "%RELTAG%"=="" (
-        echo Applying release tag: %RELTAG%
-        docker tag "%IMAGE_REPO%:git-%SHORTSHA%" "%IMAGE_REPO%:%RELTAG%"
-      ) else (
-        echo No release tag. Skipping SemVer tag.
-      )
-    '''
-  }
-}
 
     stage('Push Image') {
       steps {
@@ -141,107 +147,151 @@ pipeline {
       }
     }
 
+    // -------------------------------
+    // NEW: Rollback evidence + guarded rollback execution
+    // -------------------------------
+    stage('Rollback Evidence (History + Procedure)') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          bat '''
+            @echo on
+            set KUBECONFIG=%KUBECONFIG_FILE%
+
+            echo ===== Rollout history (evidence) =====
+            kubectl -n %NAMESPACE% rollout history deployment/%APP_NAME%
+
+            echo ===== Rollback procedure (not executed by default) =====
+            echo To rollback: kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=REV
+            echo To check:   kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
+            echo Example:    kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=2
+          '''
+        }
+      }
+    }
+
+    stage('Rollback Execute (Manual Trigger Only)') {
+      when {
+        expression {
+          return env.ROLLBACK_REV?.trim() == 'SET' && (env.ROLLBACK_TO?.trim() ?: '').isInteger()
+        }
+      }
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          bat '''
+            @echo on
+            set KUBECONFIG=%KUBECONFIG_FILE%
+
+            echo ===== Executing rollback to revision %ROLLBACK_TO% =====
+            kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=%ROLLBACK_TO% || exit /b 1
+            kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
+            kubectl -n %NAMESPACE% get pods -o wide
+          '''
+        }
+      }
+    }
+    // -------------------------------
+
     stage('Smoke Test (/health)') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           bat '''
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
-            
+
             set POD=curl-%BUILD_NUMBER%
-            
+
             echo ===== cleanup any old curl pods =====
               kubectl -n %NAMESPACE% delete pod curl --ignore-not-found
               kubectl -n %NAMESPACE% delete pod %POD% --ignore-not-found
-    
+
             echo ===== smoke test /health =====
             kubectl -n %NAMESPACE% run %POD% --rm -i --restart=Never --image=curlimages/curl -- ^
               curl -sS http://%SERVICE%:8000/health || exit /b 1
-              '''
+          '''
         }
       }
     }
-    
-stage('Load Test (k6)') {
-  steps {
-    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-      bat '''
-        @echo on
-        set KUBECONFIG=%KUBECONFIG_FILE%
 
-        set NS=%NAMESPACE%
-        set JOB=k6
-        set CM=k6-script
-        set SCRIPT=%WORKSPACE%\\loadtest\\k6.js
+    stage('Load Test (k6)') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          bat '''
+            @echo on
+            set KUBECONFIG=%KUBECONFIG_FILE%
 
-        if not exist "%SCRIPT%" (
-          echo ERROR: k6 script not found at path: %SCRIPT%
-          dir /s "%WORKSPACE%\\loadtest"
-          exit /b 1
-        )
+            set NS=%NAMESPACE%
+            set JOB=k6
+            set CM=k6-script
+            set SCRIPT=%WORKSPACE%\\loadtest\\k6.js
 
-        echo ===== k6: cleanup old resources =====
-        kubectl -n %NS% delete job %JOB% --ignore-not-found
-        kubectl -n %NS% delete configmap %CM% --ignore-not-found
+            if not exist "%SCRIPT%" (
+              echo ERROR: k6 script not found at path: %SCRIPT%
+              dir /s "%WORKSPACE%\\loadtest"
+              exit /b 1
+            )
 
-        echo ===== k6: create configmap from script in workspace =====
-        kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
+            echo ===== k6: cleanup old resources =====
+            kubectl -n %NS% delete job %JOB% --ignore-not-found
+            kubectl -n %NS% delete configmap %CM% --ignore-not-found
 
-        echo ===== validate service/endpoints =====
-        kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
-        kubectl -n %NS% get endpoints %SERVICE% -o wide || exit /b 1
+            echo ===== k6: create configmap from script in workspace =====
+            kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
 
-        echo ===== k6: generate and apply job manifest =====
-        (
-          echo apiVersion: batch/v1
-          echo kind: Job
-          echo metadata:
-          echo   name: %JOB%
-          echo   namespace: %NS%
-          echo spec:
-          echo   backoffLimit: 0
-          echo   template:
-          echo     metadata:
-          echo       labels:
-          echo         app: k6
-          echo     spec:
-          echo       restartPolicy: Never
-          echo       containers:
-          echo       - name: k6
-          echo         image: grafana/k6:0.48.0
-          echo         env:
-          echo         - name: BASE_URL
-          echo           value: "http://%SERVICE%:8000"
-          echo         volumeMounts:
-          echo         - name: script
-          echo           mountPath: /scripts
-          echo         command: ["k6","run","/scripts/k6.js"]
-          echo       volumes:
-          echo       - name: script
-          echo         configMap:
-          echo           name: %CM%
-        ) > k6-job.yaml
+            echo ===== validate service/endpoints =====
+            kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
+            kubectl -n %NS% get endpoints %SERVICE% -o wide || exit /b 1
 
-        kubectl apply -f k6-job.yaml || exit /b 1
+            echo ===== k6: generate and apply job manifest =====
+            (
+              echo apiVersion: batch/v1
+              echo kind: Job
+              echo metadata:
+              echo   name: %JOB%
+              echo   namespace: %NS%
+              echo spec:
+              echo   backoffLimit: 0
+              echo   template:
+              echo     metadata:
+              echo       labels:
+              echo         app: k6
+              echo     spec:
+              echo       restartPolicy: Never
+              echo       containers:
+              echo       - name: k6
+              echo         image: grafana/k6:0.48.0
+              echo         env:
+              echo         - name: BASE_URL
+              echo           value: "http://%SERVICE%:8000"
+              echo         volumeMounts:
+              echo         - name: script
+              echo           mountPath: /scripts
+              echo         command: ["k6","run","/scripts/k6.js"]
+              echo       volumes:
+              echo       - name: script
+              echo         configMap:
+              echo           name: %CM%
+            ) > k6-job.yaml
 
-        echo ===== k6: wait for completion (5 min) =====
-        kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
-        set RC=%ERRORLEVEL%
+            kubectl apply -f k6-job.yaml || exit /b 1
 
-        if not "%RC%"=="0" (
-          echo ===== k6: FAILED - debugging =====
-          kubectl -n %NS% describe job/%JOB%
-          kubectl -n %NS% logs -l app=k6 --tail=-1
-          exit /b 1
-        )
+            echo ===== k6: wait for completion (5 min) =====
+            kubectl -n %NS% wait --for=condition=complete job/%JOB% --timeout=300s
+            set RC=%ERRORLEVEL%
 
-        echo ===== k6: SUCCESS - final logs =====
-        kubectl -n %NS% logs -l app=k6 --tail=-1
-      '''
+            if not "%RC%"=="0" (
+              echo ===== k6: FAILED - debugging =====
+              kubectl -n %NS% describe job/%JOB%
+              kubectl -n %NS% logs -l app=k6 --tail=-1
+              exit /b 1
+            )
+
+            echo ===== k6: SUCCESS - final logs =====
+            kubectl -n %NS% logs -l app=k6 --tail=-1
+          '''
+        }
+      }
     }
-  }
-}
-     
+
   }
 
   post {
@@ -250,3 +300,4 @@ stage('Load Test (k6)') {
     }
   }
 }
+```
