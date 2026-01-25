@@ -5,22 +5,21 @@ pipeline {
     git 'Default'
   }
 
-  parameters {
-    booleanParam(name: 'DO_ROLLBACK', defaultValue: false, description: 'If true, execute rollback to a specific revision')
-    string(name: 'ROLLBACK_TO', defaultValue: '', description: 'Deployment revision number to rollback to (e.g., 112)')
-  }
-
   environment {
     IMAGE_REPO = "katiravan/mldevops"
     NAMESPACE  = "mldevopskatir"
     APP_NAME   = "mldevops"
     SERVICE    = "mldevops"
+
+    // Optional rollback controls (default OFF)
+    // To execute rollback: set job env vars or parameters:
+    // ROLLBACK_REV=SET
+    // ROLLBACK_TO=2
+    ROLLBACK_REV = ""
+    ROLLBACK_TO  = ""
   }
 
-  options {
-    timestamps()
-    disableConcurrentBuilds()
-  }
+  options { timestamps() }
 
   stages {
 
@@ -68,21 +67,17 @@ pipeline {
       }
     }
 
-    stage('Validate Tags') {
+    stage('Build Image') {
       steps {
         script {
           if (!(env.SHORTSHA ==~ /^[0-9a-f]{7}$/)) {
             error("SHORTSHA invalid. Expected 7-hex, got: '${env.SHORTSHA}'")
           }
-          if ((env.RELTAG ?: '').trim() && !(env.RELTAG ==~ /^[0-9A-Za-z._-]+$/)) {
+          if (env.RELTAG && !(env.RELTAG ==~ /^[0-9A-Za-z._-]+$/)) {
             error("RELTAG invalid. Got: '${env.RELTAG}'")
           }
         }
-      }
-    }
 
-    stage('Build Image') {
-      steps {
         bat '''
           @echo on
           echo Building image: "%IMAGE_REPO%:git-%SHORTSHA%"
@@ -143,10 +138,8 @@ pipeline {
             set KUBECONFIG=%KUBECONFIG_FILE%
 
             kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
-            kubectl -n %NAMESPACE% get deploy %APP_NAME% -o wide
-            kubectl -n %NAMESPACE% get rs -l app=%APP_NAME% -o wide
             kubectl -n %NAMESPACE% get pods -o wide
-            kubectl -n %NAMESPACE% get svc %SERVICE% -o wide
+            kubectl -n %NAMESPACE% get svc
           '''
         }
       }
@@ -164,8 +157,8 @@ pipeline {
 
             echo ===== Rollback procedure (not executed by default) =====
             echo To rollback: kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=REV
-            echo To verify:   kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
-            echo Example:    kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=112
+            echo To check:   kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s
+            echo Example:    kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=2
           '''
         }
       }
@@ -174,20 +167,22 @@ pipeline {
     stage('Rollback Execute (Manual Trigger Only)') {
       when {
         expression {
-          return params.DO_ROLLBACK && (params.ROLLBACK_TO?.trim() ==~ /^[0-9]+$/)
+          def revFlag = (env.ROLLBACK_REV ?: '').trim()
+          def to = (env.ROLLBACK_TO ?: '').trim()
+          return revFlag == 'SET' && to ==~ /^[0-9]+$/
         }
       }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          bat """
+          bat '''
             @echo on
             set KUBECONFIG=%KUBECONFIG_FILE%
 
-            echo ===== Executing rollback to revision ${params.ROLLBACK_TO} =====
-            kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=${params.ROLLBACK_TO} || exit /b 1
+            echo ===== Executing rollback to revision %ROLLBACK_TO% =====
+            kubectl -n %NAMESPACE% rollout undo deployment/%APP_NAME% --to-revision=%ROLLBACK_TO% || exit /b 1
             kubectl -n %NAMESPACE% rollout status deployment/%APP_NAME% --timeout=180s || exit /b 1
             kubectl -n %NAMESPACE% get pods -o wide
-          """
+          '''
         }
       }
     }
@@ -238,8 +233,9 @@ pipeline {
             echo ===== k6: create configmap from script in workspace =====
             kubectl -n %NS% create configmap %CM% --from-file=k6.js="%SCRIPT%" || exit /b 1
 
-            echo ===== validate service =====
+            echo ===== validate service/endpoints =====
             kubectl -n %NS% get svc %SERVICE% -o wide || exit /b 1
+            kubectl -n %NS% get endpoints %SERVICE% -o wide || exit /b 1
 
             echo ===== k6: generate and apply job manifest =====
             (
@@ -287,10 +283,6 @@ pipeline {
 
             echo ===== k6: SUCCESS - final logs =====
             kubectl -n %NS% logs -l app=k6 --tail=-1
-
-            echo ===== k6: cleanup job + configmap (keep cluster clean) =====
-            kubectl -n %NS% delete job %JOB% --ignore-not-found
-            kubectl -n %NS% delete configmap %CM% --ignore-not-found
           '''
         }
       }
@@ -299,7 +291,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md,k6-job.yaml,.reltag.txt', fingerprint: true, allowEmptyArchive: true
+      archiveArtifacts artifacts: 'k8s/**/*,loadtest/**/*,Dockerfile,Jenkinsfile,requirements.txt,README.md', fingerprint: true
     }
   }
 }
