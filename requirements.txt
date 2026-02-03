@@ -5,3 +5,5 @@ scikit-learn==1.6.1
 numpy
 httpx
 pandas
+ruff==0.9.6
+pytest-cov==6.0.0
