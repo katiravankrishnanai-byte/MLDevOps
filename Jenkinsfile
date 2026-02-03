@@ -35,6 +35,22 @@ pipeline {
       }
     }
 
+    stage('QA (Lint/Static Checks)') {
+  steps {
+    bat '''
+      python --version
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+
+      REM Lint + static checks (fail pipeline if violations found)
+      python -m ruff check .
+
+      REM Format enforcement (fail pipeline if not formatted)
+      python -m ruff format --check .
+    '''
+      }
+    }
+
     stage('QA (Unit Tests)') {
       steps {
         bat '''
