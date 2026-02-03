@@ -109,7 +109,7 @@ pipeline {
             kubectl apply -f k8s\\namespace.yaml
             kubectl apply -f k8s\\deployment.yaml
             kubectl apply -f k8s\\service.yaml
-
+            kubectl apply -f k8s\\PodDisruptionBudget.yaml
             kubectl -n %NS% set image deployment/%APP% %APP%=%IMG_GIT%
           '''
         }
