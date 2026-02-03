@@ -3,7 +3,7 @@ from typing import Optional, Any, Dict, List
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 
