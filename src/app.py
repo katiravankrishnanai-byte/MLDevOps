@@ -97,10 +97,13 @@ def load_artifact() -> None:
 
 
 @app.get("/health")
-def health() -> Dict[str, Any]:
+def health(response: Response) -> Dict[str, Any]:
+    ok = bool(MODEL_LOADED)
+    if not ok:
+        response.status_code = 503
     return {
-        "status": "ok",
-        "model_loaded": bool(MODEL_LOADED),
+        "status": "ok" if ok else "not_ready",
+        "model_loaded": ok,
         "preprocessor_present": bool(
             PIPELINE is not None and _is_preprocessor_present(PIPELINE)
         ),
