@@ -78,7 +78,11 @@ def load_artifact() -> None:
 
         # Your repo’s artifact is a dict bundle in the stable version.
         if isinstance(ARTIFACT, dict):
-            PIPELINE = ARTIFACT.get("pipeline") or ARTIFACT.get("model") or ARTIFACT.get("estimator")
+            PIPELINE = (
+                ARTIFACT.get("pipeline")
+                or ARTIFACT.get("model")
+                or ARTIFACT.get("estimator")
+            )
             CONTRACT = ARTIFACT.get("contract") or {}
         else:
             PIPELINE = ARTIFACT
@@ -97,7 +101,9 @@ def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "model_loaded": bool(MODEL_LOADED),
-        "preprocessor_present": bool(PIPELINE is not None and _is_preprocessor_present(PIPELINE)),
+        "preprocessor_present": bool(
+            PIPELINE is not None and _is_preprocessor_present(PIPELINE)
+        ),
         "model_path": os.getenv("MODEL_PATH", os.path.join("models", "model.joblib")),
     }
 
