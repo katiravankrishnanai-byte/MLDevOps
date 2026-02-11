@@ -227,7 +227,8 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'k6-job.yaml', allowEmptyArchive: true
+         archiveArtifacts artifacts: '**/reports/**, **/*.log, **/k6*.json, **/k6*.txt', fingerprint: true
+          junit '**/junit*.xml'
     }
   }
 }
